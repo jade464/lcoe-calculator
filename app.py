@@ -55,7 +55,7 @@ def calculate_dcf(period, wacc, initial_invest, annual_opex_func, annual_gen_fun
 # 模块 1: 光伏 + 储能 LCOE
 # ==========================================
 def render_pv_ess_lcoe():
-    st.header("☀️ 光伏+储能 LCOE 测算")
+    st.header("⚡️ 新能源+储能 LCOE 测算")
     st.info("适用于：集中式光伏电站、光储一体化项目的度电成本测算")
     
     col_in1, col_in2 = st.columns([1, 2])
@@ -268,3 +268,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
