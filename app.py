@@ -26,10 +26,15 @@ def calculate_dcf(period, wacc, initial_invest, annual_opex_func, annual_gen_fun
     for y in years:
         # 1. 当年名义支出
         cf_out = annual_opex_func(y)
+        
+        # 加入特殊支出 (如电池更换)
         if special_costs and y in special_costs:
             cf_out += special_costs[y]
+            
+        # 扣除残值 (最后一年作为负成本)
         if y == period:
             cf_out -= salvage_val
+            
         cash_flows.append(cf_out)
         
         # 2. 当年物理产出
@@ -46,7 +51,7 @@ def calculate_dcf(period, wacc, initial_invest, annual_opex_func, annual_gen_fun
 # 模块 1: 光伏 + 储能 LCOE
 # ==========================================
 def render_pv_ess_lcoe():
-    st.header("☀️ 光伏+储能 LCOE 测算")
+    st.header("⚡️ 新能源+储能 LCOE 测算")
     st.info("适用于：集中式光伏电站、光储一体化项目的度电成本测算")
     
     col_in1, col_in2 = st.columns([1, 2])
@@ -77,10 +82,11 @@ def render_pv_ess_lcoe():
             ess_cycles = st.number_input("储能年循环次数", min_value=0.0, value=1000.0)
             ess_eff = st.slider("储能综合效率 (%)", 70, 100, 85, key="pv_eff") / 100
             
-        st.subheader("5. 资产置换")
+        st.subheader("5. 资产置换与残值")
         rep_year = st.slider("电池更换年份", 1, period, 10, key="pv_rep_year")
         rep_cost = st.number_input("更换成本 (万元)", min_value=0.0, value=5000.0)
-        salvage_rate = st.number_input("期末综合残值率 (%)", min_value=0.0, value=5.0) / 100
+        # 原有逻辑保留
+        salvage_rate = st.number_input("期末综合残值率 (%)", min_value=0.0, value=5.0, key="pv_salvage") / 100
 
     # --- Logic ---
     total_inv = capex_pv + capex_ess + capex_grid
@@ -113,7 +119,7 @@ def render_pv_ess_lcoe():
     st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
-# 模块 2: 燃气发电 LCOE (已升级为 GJ 单位)
+# 模块 2: 燃气发电 LCOE (含残值更新)
 # ==========================================
 def render_gas_lcoe():
     st.header("🔥 燃气发电 LCOE 测算")
@@ -125,7 +131,11 @@ def render_gas_lcoe():
         wacc = st.number_input("折现率 WACC (%)", min_value=0.0, value=8.0, key="gas_wacc") / 100
         period = int(st.number_input("运营周期 (年)", min_value=1, value=25, key="gas_period"))
         gas_capex = st.number_input("项目总投资 (万元)", min_value=0.0, value=60000.0)
-        gas_fixed_opex = st.number_input("固定运维费 (万元/年)", min_value=0.0, value=1200.0, help="含人员、保险、长协服务费")
+        gas_fixed_opex = st.number_input("固定运维费 (万元/年)", min_value=0.0, value=1200.0)
+        
+        # [新增] 残值率输入
+        st.markdown("##### 💰 资产残值")
+        gas_salvage_rate = st.number_input("期末固定资产残值率 (%)", min_value=0.0, value=5.0, key="gas_salvage") / 100
         
     with col2:
         st.subheader("2. 燃料与效率 (GJ标准)")
@@ -133,29 +143,15 @@ def render_gas_lcoe():
         gas_hours = st.number_input("年运行小时数 (h)", min_value=0.0, value=3000.0)
         
         st.markdown("##### ⛽ 燃料成本核心参数")
-        # 澳洲市场 GJ 价格通常在 $8 - $20 AUD 区间
-        # 中国市场如果换算成 GJ，大概在 60 - 90 元/GJ (视气源而定)
-        gas_price_gj = st.number_input("天然气价格 (元/GJ)", min_value=0.0, value=60.0, step=1.0, help="1 GJ ≈ 0.947 MMBtu。澳洲现货通常 10-15 AUD/GJ。")
+        gas_price_gj = st.number_input("天然气价格 (元/GJ)", min_value=0.0, value=60.0, step=1.0)
+        gas_heat_rate = st.number_input("机组平均热耗率 (GJ/kWh)", min_value=0.0, value=0.0095, format="%.4f", step=0.0001)
         
-        # 热耗率 (Heat Rate): 
-        # 100% 效率 = 0.0036 GJ/kWh
-        # 60% 效率 (H级燃机) ≈ 0.006 GJ/kWh
-        # 35% 效率 (单循环调峰) ≈ 0.010 GJ/kWh
-        gas_heat_rate = st.number_input("机组平均热耗率 (GJ/kWh)", min_value=0.0, value=0.0095, format="%.4f", step=0.0001, help="即 Heat Rate。联合循环约 0.006-0.007，单循环调峰约 0.009-0.011")
-        
-        # 辅助显示效率
         efficiency = 0.0036 / gas_heat_rate if gas_heat_rate > 0 else 0
         st.caption(f"当前热耗对应等效热效率: :blue[{efficiency:.1%}]")
 
     # --- 计算逻辑 ---
     annual_gen_mwh = gas_cap * gas_hours
-    
-    # 燃料成本计算 (GJ 单位)
-    # 1 MWh = 1000 kWh
-    # 燃料成本 (元/MWh) = 1000 (kWh) * 热耗 (GJ/kWh) * 气价 (元/GJ)
     fuel_cost_per_mwh_yuan = 1000 * gas_heat_rate * gas_price_gj
-    
-    # 年燃料总支出 (万元)
     annual_fuel_cost_wan = (annual_gen_mwh * fuel_cost_per_mwh_yuan) / 10000
     
     def get_opex_gas(y):
@@ -164,7 +160,9 @@ def render_gas_lcoe():
     def get_gen_gas(y):
         return annual_gen_mwh
     
-    salvage = gas_capex * 0.05
+    # [修正逻辑] 使用用户输入的残值率
+    salvage = gas_capex * gas_salvage_rate
+    
     npv_cost, npv_gen, cf_flows = calculate_dcf(period, wacc, gas_capex, get_opex_gas, get_gen_gas, salvage_val=salvage)
     lcoe = (npv_cost / npv_gen) * 10 if npv_gen > 0 else 0
     
@@ -172,9 +170,9 @@ def render_gas_lcoe():
     st.markdown("---")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("LCOE (元/kWh)", f"{lcoe:.4f}")
-    c2.metric("其中：燃料成本", f"{fuel_cost_per_mwh_yuan/1000:.4f} 元/kWh", delta_color="off", help="纯燃料成本 (Fuel Component)")
+    c2.metric("其中：燃料成本", f"{fuel_cost_per_mwh_yuan/1000:.4f} 元/kWh", delta_color="off")
     c3.metric("年燃料支出 (万元)", f"{annual_fuel_cost_wan:,.0f}")
-    c4.metric("年发电量 (亿kWh)", f"{annual_gen_mwh/100000:.2f}")
+    c4.metric("期末残值回收 (万元)", f"{salvage:,.0f}", help="在第N年抵扣现金流出")
     
     cost_labels = ["初始投资(摊销)", "固定运维", "燃料成本"]
     ann_capex = gas_capex / period 
@@ -183,7 +181,7 @@ def render_gas_lcoe():
     st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================
-# 模块 3: 储能 LCOS 测算
+# 模块 3: 储能 LCOS 测算 (含残值更新)
 # ==========================================
 def render_lcos():
     st.header("🔋 储能 LCOS 平准化成本测算")
@@ -200,6 +198,10 @@ def render_lcos():
         
         lcos_capex = st.number_input("储能系统总投资 (万元)", min_value=0.0, value=25000.0)
         lcos_opex_rate = st.number_input("年运维费率 (%)", min_value=0.0, value=2.0, key="lcos_opex") / 100
+        
+        # [新增] 残值率输入
+        st.markdown("##### 💰 资产残值")
+        lcos_salvage_rate = st.number_input("期末固定资产残值率 (%)", min_value=0.0, value=3.0, key="lcos_salvage", help="电池通常无残值，但升压站和集装箱有一定残值") / 100
 
     with col2:
         st.subheader("2. 运行与充电")
@@ -231,9 +233,19 @@ def render_lcos():
     npv_denominator = 0
     debug_charging_cost = 0 
     
+    # [修正逻辑] 计算残值金额
+    lcos_salvage_val = lcos_capex * lcos_salvage_rate
+
     for y in years:
         cost_wan, discharge_mwh, charge_cost_wan = get_lcos_vars(y)
-        if y == replace_yr: cost_wan += replace_val
+        
+        # 电池更换支出
+        if y == replace_yr: 
+            cost_wan += replace_val
+            
+        # [修正逻辑] 最后一年扣减残值
+        if y == lcos_period:
+            cost_wan -= lcos_salvage_val
             
         discount = 1 / ((1 + lcos_wacc) ** y)
         npv_numerator += cost_wan * discount
@@ -248,7 +260,7 @@ def render_lcos():
     res1, res2, res3 = st.columns(3)
     res1.metric("全周期 LCOS (元/kWh)", f"{lcos:.4f}", help="含充电成本")
     res2.metric("储能加工成本 (元/kWh)", f"{lcos_addon:.4f}", help="不含充电成本", delta_color="inverse")
-    res3.metric("全周期放电量 (万MWh)", f"{npv_denominator/10000:.2f}")
+    res3.metric("期末残值回收 (万元)", f"{lcos_salvage_val:,.0f}")
 
 # ==========================================
 # 主程序入口
@@ -261,7 +273,7 @@ def main():
     )
     
     st.sidebar.markdown("---")
-    st.sidebar.caption("v2.2 | GJ Standard Edition")
+    st.sidebar.caption("v2.3 | Residual Value Added")
     
     if mode == "光伏+储能 LCOE":
         render_pv_ess_lcoe()
