@@ -46,7 +46,7 @@ def calculate_dcf(period, wacc, initial_invest, annual_opex_func, annual_gen_fun
 # 模块 1: 光伏 + 储能 LCOE
 # ==========================================
 def render_pv_ess_lcoe():
-    st.header("⚡️ 新能源+储能 LCOE 测算")
+    st.header("☀️ 光伏+储能 LCOE 测算")
     st.info("适用于：集中式光伏电站、光储一体化项目的度电成本测算")
     
     col_in1, col_in2 = st.columns([1, 2])
@@ -133,4 +133,142 @@ def render_gas_lcoe():
         gas_hours = st.number_input("年运行小时数 (h)", min_value=0.0, value=3000.0)
         
         st.markdown("##### ⛽ 燃料成本核心参数")
-        # 澳洲市场 GJ 价格通常在
+        # 澳洲市场 GJ 价格通常在 $8 - $20 AUD 区间
+        # 中国市场如果换算成 GJ，大概在 60 - 90 元/GJ (视气源而定)
+        gas_price_gj = st.number_input("天然气价格 (元/GJ)", min_value=0.0, value=60.0, step=1.0, help="1 GJ ≈ 0.947 MMBtu。澳洲现货通常 10-15 AUD/GJ。")
+        
+        # 热耗率 (Heat Rate): 
+        # 100% 效率 = 0.0036 GJ/kWh
+        # 60% 效率 (H级燃机) ≈ 0.006 GJ/kWh
+        # 35% 效率 (单循环调峰) ≈ 0.010 GJ/kWh
+        gas_heat_rate = st.number_input("机组平均热耗率 (GJ/kWh)", min_value=0.0, value=0.0095, format="%.4f", step=0.0001, help="即 Heat Rate。联合循环约 0.006-0.007，单循环调峰约 0.009-0.011")
+        
+        # 辅助显示效率
+        efficiency = 0.0036 / gas_heat_rate if gas_heat_rate > 0 else 0
+        st.caption(f"当前热耗对应等效热效率: :blue[{efficiency:.1%}]")
+
+    # --- 计算逻辑 ---
+    annual_gen_mwh = gas_cap * gas_hours
+    
+    # 燃料成本计算 (GJ 单位)
+    # 1 MWh = 1000 kWh
+    # 燃料成本 (元/MWh) = 1000 (kWh) * 热耗 (GJ/kWh) * 气价 (元/GJ)
+    fuel_cost_per_mwh_yuan = 1000 * gas_heat_rate * gas_price_gj
+    
+    # 年燃料总支出 (万元)
+    annual_fuel_cost_wan = (annual_gen_mwh * fuel_cost_per_mwh_yuan) / 10000
+    
+    def get_opex_gas(y):
+        return gas_fixed_opex + annual_fuel_cost_wan
+    
+    def get_gen_gas(y):
+        return annual_gen_mwh
+    
+    salvage = gas_capex * 0.05
+    npv_cost, npv_gen, cf_flows = calculate_dcf(period, wacc, gas_capex, get_opex_gas, get_gen_gas, salvage_val=salvage)
+    lcoe = (npv_cost / npv_gen) * 10 if npv_gen > 0 else 0
+    
+    # --- 结果 ---
+    st.markdown("---")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("LCOE (元/kWh)", f"{lcoe:.4f}")
+    c2.metric("其中：燃料成本", f"{fuel_cost_per_mwh_yuan/1000:.4f} 元/kWh", delta_color="off", help="纯燃料成本 (Fuel Component)")
+    c3.metric("年燃料支出 (万元)", f"{annual_fuel_cost_wan:,.0f}")
+    c4.metric("年发电量 (亿kWh)", f"{annual_gen_mwh/100000:.2f}")
+    
+    cost_labels = ["初始投资(摊销)", "固定运维", "燃料成本"]
+    ann_capex = gas_capex / period 
+    fig = go.Figure(data=[go.Pie(labels=cost_labels, values=[ann_capex, gas_fixed_opex, annual_fuel_cost_wan], hole=.4)])
+    fig.update_layout(title="年度成本结构估算 (名义值)", height=350)
+    st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================
+# 模块 3: 储能 LCOS 测算
+# ==========================================
+def render_lcos():
+    st.header("🔋 储能 LCOS 平准化成本测算")
+    st.info("适用于：独立储能电站的生命周期成本分析")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("1. 系统参数")
+        lcos_wacc = st.number_input("折现率 WACC (%)", min_value=0.0, value=8.0, key="lcos_wacc") / 100
+        lcos_period = int(st.number_input("项目寿命 (年)", min_value=1, value=15, key="lcos_period"))
+        
+        ess_power = st.number_input("额定功率 (MW)", min_value=0.0, value=100.0)
+        ess_capacity = st.number_input("额定容量 (MWh)", min_value=0.0, value=200.0)
+        
+        lcos_capex = st.number_input("储能系统总投资 (万元)", min_value=0.0, value=25000.0)
+        lcos_opex_rate = st.number_input("年运维费率 (%)", min_value=0.0, value=2.0, key="lcos_opex") / 100
+
+    with col2:
+        st.subheader("2. 运行与充电")
+        cycles_per_year = st.number_input("年循环次数", min_value=0.0, value=330.0)
+        rte = st.slider("往返效率 RTE (%)", 70, 95, 85, key="lcos_rte") / 100
+        degradation = st.number_input("年容量衰减率 (%)", min_value=0.0, value=2.0) / 100
+        
+        st.markdown("##### 🔌 充电成本")
+        charge_price = st.number_input("平均充电电价 (元/kWh)", min_value=0.0, value=0.20)
+        
+        replace_yr = st.number_input("电池更换年份", min_value=0, value=8, key="lcos_rep")
+        replace_val = st.number_input("更换投入 (万元)", min_value=0.0, value=10000.0)
+
+    # --- Logic ---
+    def get_lcos_vars(y):
+        current_capacity = ess_capacity * ((1 - degradation) ** (y-1))
+        if current_capacity < 0: current_capacity = 0
+        
+        annual_discharge = current_capacity * cycles_per_year * rte
+        annual_charge = current_capacity * cycles_per_year 
+        charging_cost_wan = annual_charge * 1000 * charge_price / 10000
+        opex_wan = lcos_capex * lcos_opex_rate
+        total_out_wan = opex_wan + charging_cost_wan
+        
+        return total_out_wan, annual_discharge, charging_cost_wan
+
+    years = np.arange(1, lcos_period + 1)
+    npv_numerator = lcos_capex
+    npv_denominator = 0
+    debug_charging_cost = 0 
+    
+    for y in years:
+        cost_wan, discharge_mwh, charge_cost_wan = get_lcos_vars(y)
+        if y == replace_yr: cost_wan += replace_val
+            
+        discount = 1 / ((1 + lcos_wacc) ** y)
+        npv_numerator += cost_wan * discount
+        npv_denominator += discharge_mwh * discount
+        debug_charging_cost += charge_cost_wan * discount
+        
+    lcos = (npv_numerator / npv_denominator) * 10 if npv_denominator > 0 else 0
+    lcos_addon = ((npv_numerator - debug_charging_cost) / npv_denominator) * 10 if npv_denominator > 0 else 0
+
+    # --- Output ---
+    st.markdown("---")
+    res1, res2, res3 = st.columns(3)
+    res1.metric("全周期 LCOS (元/kWh)", f"{lcos:.4f}", help="含充电成本")
+    res2.metric("储能加工成本 (元/kWh)", f"{lcos_addon:.4f}", help="不含充电成本", delta_color="inverse")
+    res3.metric("全周期放电量 (万MWh)", f"{npv_denominator/10000:.2f}")
+
+# ==========================================
+# 主程序入口
+# ==========================================
+def main():
+    st.sidebar.title("🚀 测算模型选择")
+    mode = st.sidebar.radio(
+        "请选择计算模块：",
+        ("光伏+储能 LCOE", "燃气发电 LCOE", "储能 LCOS")
+    )
+    
+    st.sidebar.markdown("---")
+    st.sidebar.caption("v2.2 | GJ Standard Edition")
+    
+    if mode == "光伏+储能 LCOE":
+        render_pv_ess_lcoe()
+    elif mode == "燃气发电 LCOE":
+        render_gas_lcoe()
+    elif mode == "储能 LCOS":
+        render_lcos()
+
+if __name__ == "__main__":
+    main()
