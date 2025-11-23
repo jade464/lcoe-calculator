@@ -5,7 +5,7 @@ import io
 import xlsxwriter
 
 # --- 1. 全局配置 ---
-st.set_page_config(page_title="新能源资产持有成本测算 (Owner's View)", layout="wide", page_icon="🏢")
+st.set_page_config(page_title="新能源资产持有成本测算 (Fully Unlocked)", layout="wide", page_icon="🔓")
 
 st.markdown("""
 <style>
@@ -32,13 +32,15 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
     fmt_num = workbook.add_format({'border': 1, 'num_format': '#,##0.00'})
     fmt_money = workbook.add_format({'border': 1, 'num_format': '¥ #,##0'})
     
-    worksheet.write('A1', f"{model_name} - 关键假设", workbook.add_format({'bold': True, 'font_size': 14}))
+    # 1. Inputs
+    worksheet.write('A1', f"{model_name} - Key Assumptions", workbook.add_format({'bold': True, 'font_size': 14}))
     r = 2
     for k, v in inputs.items():
         worksheet.write(r, 0, k, fmt_sub)
         worksheet.write(r, 1, v, fmt_num)
         r += 1
         
+    # 2. Waterfall
     r += 2
     worksheet.write(r, 0, "Cash Flow Waterfall", workbook.add_format({'bold': True, 'font_size': 12}))
     r += 1
@@ -48,7 +50,7 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
     r += 1
     
     rows = [
-        ("物理发电/放电量 (MWh)", "Generation", fmt_num),
+        ("物理发电量 (MWh)", "Generation", fmt_num),
         ("折现系数", "Discount Factor", fmt_num),
         ("折现发电量", "Discounted Gen", fmt_num),
         ("", "", None),
@@ -59,7 +61,7 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
         ("5. 残值回收 (税前)", "Salvage Pre-tax", fmt_money),
         ("   >>> 税前净现金流", "Net Cash Flow (Pre-tax)", fmt_money),
         ("", "", None),
-        ("--- 税务调节 (Tax Adjustments) ---", "", None),
+        ("--- 税务调节 ---", "", None),
         ("折旧 (D&A)", "Depreciation", fmt_money),
         ("税盾效应 (抵扣)", "Tax Shield", fmt_money),
         ("Opex抵税 (抵扣)", "Opex Tax Benefit", fmt_money),
@@ -79,7 +81,7 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
     return output.getvalue()
 
 # ==========================================
-# 3. 模块 A: 光伏 + 储能 LCOE
+# 3. 模块 A: 光伏 + 储能 LCOE (全参数开放)
 # ==========================================
 def render_pv_ess_lcoe():
     st.markdown("## ☀️ 光伏+储能 LCOE (资产持有者综合视角)")
@@ -91,8 +93,12 @@ def render_pv_ess_lcoe():
         pv_hours = c2.number_input("利用小时数 (h)", value=2200.0)
         ess_cap = c3.number_input("储能容量 (MWh)", value=120.0)
         ess_cycles = c4.number_input("循环次数", value=1000.0)
-        # 这里虽然是LCOE，但为了统一也加上效率
-        ess_eff = 0.85 
+        
+        # [新增开放] 效率与衰减
+        st.caption("技术细节参数")
+        t1, t2 = st.columns(2)
+        pv_deg = t1.number_input("光伏年衰减率 (%)", value=0.5, step=0.1) / 100
+        ess_eff = t2.number_input("储能系统效率 (%)", value=85.0, step=0.1) / 100
         
         st.markdown("---")
         st.markdown("### 2. 投资与运维")
@@ -119,9 +125,9 @@ def render_pv_ess_lcoe():
         l1, l2, l3 = st.columns(3)
         rep_yr = l1.number_input("更换年份", 10)
         rep_cost = l2.number_input("更换费用 (万)", 5000.0)
-        salvage_rate = l3.number_input("残值率 (%)", 5.0)/100
+        salvage_rate = l3.number_input("期末综合残值率 (%)", 5.0)/100
 
-    # --- Core Logic ---
+    # --- Calculation ---
     total_inv = capex_pv + capex_ess + capex_grid
     years = [0] + list(range(1, period + 1))
     
@@ -146,11 +152,17 @@ def render_pv_ess_lcoe():
     cum_denom = 0
     cum_num_pre = total_inv
     cum_num_after = total_inv
+    
     salvage_val_pre = total_inv * salvage_rate
 
     for y in range(1, period + 1):
         ts["Year"].append(y)
-        deg = 1 - (y-1)*0.005
+        
+        # [修正] 使用用户输入的 pv_deg
+        deg = 1 - (y-1) * pv_deg
+        if deg < 0: deg = 0
+        
+        # [修正] 使用用户输入的 ess_eff
         gen = (pv_cap * pv_hours * deg) + (ess_cap * ess_cycles * ess_eff)
         ts["Generation"].append(gen)
         
@@ -162,6 +174,7 @@ def render_pv_ess_lcoe():
         ts["Cum Discounted Gen"].append(cum_denom)
         
         ts["Capex"].append(0)
+        
         opex_pre = (capex_pv*opex_r_pv) + (capex_ess*opex_r_ess) + (capex_grid*opex_r_grid)
         ts["Opex Pre-tax"].append(opex_pre)
         ts["Fuel/Charge Pre-tax"].append(0)
@@ -205,18 +218,17 @@ def render_pv_ess_lcoe():
     lcoe_ppa = lcoe_after / (1 - tax_rate) if (1-tax_rate) > 0 else 0
     
     st.markdown("---")
-    st.markdown("### 📊 综合测算结果")
     col1, col2, col3 = st.columns(3)
-    col1.metric("💡 税后真实 LCOE", f"{lcoe_after:.4f} 元/kWh", delta=f"较税前降低 {(lcoe_pre - lcoe_after):.4f}", delta_color="inverse")
+    col1.metric("💡 税后真实 LCOE", f"{lcoe_after:.4f} 元/kWh")
     col2.metric("⚙️ 税前技术 LCOE", f"{lcoe_pre:.4f} 元/kWh")
     col3.metric("📉 盈亏平衡 PPA", f"{lcoe_ppa:.4f} 元/kWh")
     
-    with st.expander("📂 导出综合底稿"):
-        excel = generate_professional_excel("PV_ESS_LCOE", {"Tax": tax_rate, "WACC": wacc}, ts, {"Real LCOE": lcoe_after})
-        st.download_button("📥 下载 Excel", excel, "PV_ESS_Comprehensive_LCOE.xlsx")
+    with st.expander("📂 导出底稿"):
+        excel = generate_professional_excel("PV_ESS_LCOE", {"PV Deg": pv_deg, "ESS Eff": ess_eff}, ts, {"Real LCOE": lcoe_after})
+        st.download_button("📥 下载 Excel", excel, "PV_ESS_LCOE.xlsx")
 
 # ==========================================
-# 4. 燃气 LCOE (综合版) - 已移除限制
+# 4. 燃气 LCOE (全参数开放)
 # ==========================================
 def render_gas_lcoe():
     st.markdown("## 🔥 燃气发电 LCOE (资产持有者综合视角)")
@@ -224,7 +236,6 @@ def render_gas_lcoe():
     with st.container():
         st.markdown("### 1. 规模与投资")
         c1, c2, c3 = st.columns(3)
-        # 移除 min_value 限制
         gas_cap = c1.number_input("装机 (MW)", value=360.0)
         gas_capex = c2.number_input("投资 (万)", value=60000.0)
         wacc = c3.number_input("WACC (%)", value=8.0)/100
@@ -237,10 +248,12 @@ def render_gas_lcoe():
         fixed_opex = st.number_input("固定运维 (万/年)", value=1200.0)
 
         st.markdown("### 3. 税务与周期")
-        f1, f2, f3 = st.columns(3)
+        f1, f2, f3, f4 = st.columns(4)
         tax_rate = f1.number_input("税率 (%)", value=25.0)/100
         depr_years = f2.number_input("折旧年", value=20)
         period = int(f3.number_input("周期 (年)", value=25))
+        # [新增开放] 残值率
+        salvage_rate = f4.number_input("残值率 (%)", value=5.0)/100
 
     total_inv = gas_capex
     years = [0] + list(range(1, period + 1))
@@ -263,8 +276,9 @@ def render_gas_lcoe():
     
     annual_gen = gas_cap * hours
     annual_fuel_pre = (annual_gen * 1000 * heat_rate * price) / 10000
-    annual_depr = total_inv / depr_years if depr_years > 0 else 0
-    sal_val_pre = total_inv * 0.05
+    annual_depr = total_inv / depr_years
+    # [修正] 使用用户输入的残值率
+    sal_val_pre = total_inv * salvage_rate
     
     cum_denom = 0
     cum_num_pre = total_inv
@@ -327,11 +341,11 @@ def render_gas_lcoe():
     c3.metric("📉 盈亏平衡 PPA", f"{lcoe_ppa:.4f} 元/kWh")
     
     with st.expander("📂 导出"):
-        excel = generate_professional_excel("Gas_LCOE", {"Tax": tax_rate}, ts, {"Real LCOE": lcoe_after})
-        st.download_button("📥 下载 Excel", excel, "Gas_Comprehensive_LCOE.xlsx")
+        excel = generate_professional_excel("Gas_LCOE", {"Salvage": salvage_rate}, ts, {"Real LCOE": lcoe_after})
+        st.download_button("📥 下载 Excel", excel, "Gas_LCOE.xlsx")
 
 # ==========================================
-# 5. 储能 LCOS (综合版 - 修复输入)
+# 5. 储能 LCOS (全参数开放 + 修复Bug)
 # ==========================================
 def render_lcos():
     st.markdown("## 🔋 储能 LCOS (资产持有者综合视角)")
@@ -341,8 +355,7 @@ def render_lcos():
         c1, c2, c3, c4 = st.columns(4)
         ess_cap = c1.number_input("容量 (MWh)", value=200.0)
         cycles = c2.number_input("年循环次数 (次)", value=330.0)
-        # [新增] 效率与衰减输入
-        rte = c3.number_input("系统效率 RTE (%)", value=85.0, help="影响放电量(分母)") / 100
+        rte = c3.number_input("系统效率 RTE (%)", value=85.0) / 100
         deg = c4.number_input("年衰减率 (%)", value=2.0) / 100
         
         st.markdown("### 2. 投资与运营")
@@ -358,10 +371,12 @@ def render_lcos():
         depr_years = f3.number_input("折旧年限", value=15)
         
         st.markdown("### 4. 周期与置换")
-        l1, l2, l3 = st.columns(3)
+        l1, l2, l3, l4 = st.columns(4)
         period = int(l1.number_input("寿命 (年)", value=15))
         rep_yr = l2.number_input("更换年份", 8)
         rep_cost = l3.number_input("更换费用", 10000.0)
+        # [新增开放] 残值率
+        salvage_rate = l4.number_input("残值率 (%)", value=3.0) / 100
 
     # Calc
     total_inv = capex
@@ -383,28 +398,24 @@ def render_lcos():
     ts["PV of Cost (After-tax)"][0] = total_inv
     ts["Cum PV Cost (After-tax)"][0] = total_inv
     
-    annual_depr = total_inv / depr_years if depr_years > 0 else 0
+    annual_depr = total_inv / depr_years
     cum_denom = 0
     cum_num_pre = total_inv
     cum_num_after = total_inv
+    # [修正] 使用用户输入残值率
+    sal_val_pre = total_inv * salvage_rate
     
     for y in range(1, period + 1):
         ts["Year"].append(y)
         
-        # 1. 物理放电量 (考虑衰减与效率)
-        # 逻辑：Charge = Cap * (1-deg)^(y-1) * cycles
-        #      Discharge = Charge * RTE
         curr_cap = ess_cap * ((1-deg)**(y-1))
-        # 充电量 (作为购买成本基础)
-        charge_mwh = curr_cap * cycles 
-        # 放电量 (作为LCOS分母)
-        discharge_mwh = charge_mwh * rte
-        
-        ts["Generation"].append(discharge_mwh)
+        # [Bug修复] 使用用户输入的 rte，而不是写死的0.85
+        dis = curr_cap * cycles * rte 
+        ts["Generation"].append(dis)
         
         df = 1 / ((1+wacc)**y)
         ts["Discount Factor"].append(df)
-        g_npv = discharge_mwh * df
+        g_npv = dis * df
         ts["Discounted Gen"].append(g_npv)
         cum_denom += g_npv
         ts["Cum Discounted Gen"].append(cum_denom)
@@ -414,16 +425,20 @@ def render_lcos():
         opex_pre = capex * opex_r
         ts["Opex Pre-tax"].append(opex_pre)
         
-        charge_cost_pre = (charge_mwh * 1000 * charge_p) / 10000
-        ts["Fuel/Charge Pre-tax"].append(charge_cost_pre)
+        # 充电成本基于充电量，放电量才乘效率
+        # Charge = Capacity * Cycles
+        charge_pre = (curr_cap * cycles * 1000 * charge_p) / 10000
+        ts["Fuel/Charge Pre-tax"].append(charge_pre)
         
         rep = rep_cost if y == rep_yr else 0
         ts["Replacement"].append(rep)
         
-        ts["Salvage Pre-tax"].append(0) # 简化
+        # [修正] 启用LCOS残值
+        sal_pre = -sal_val_pre if y == period else 0
+        ts["Salvage Pre-tax"].append(sal_pre)
         
         # Path A
-        net_pre = opex_pre + charge_cost_pre + rep
+        net_pre = opex_pre + charge_pre + rep + sal_pre
         ts["Net Cash Flow (Pre-tax)"].append(net_pre)
         c_npv_pre = net_pre * df
         ts["PV of Cost (Pre-tax)"].append(c_npv_pre)
@@ -437,12 +452,13 @@ def render_lcos():
         shield = curr_depr * tax_rate
         ts["Tax Shield"].append(-shield)
         
-        opex_ben = (opex_pre + charge_cost_pre) * tax_rate
+        opex_ben = (opex_pre + charge_pre) * tax_rate
         ts["Opex Tax Benefit"].append(-opex_ben)
         
-        ts["Salvage After-tax"].append(0)
+        sal_after = sal_pre * (1 - tax_rate)
+        ts["Salvage After-tax"].append(sal_after)
         
-        net_after = (opex_pre + charge_cost_pre - opex_ben) + rep - shield
+        net_after = (opex_pre + charge_pre - opex_ben) + rep - shield + sal_after
         ts["Net Cost Flow (After-tax)"].append(net_after)
         
         c_npv_after = net_after * df
@@ -461,8 +477,8 @@ def render_lcos():
     c3.metric("📉 盈亏平衡 PPA", f"{lcos_ppa:.4f}")
     
     with st.expander("📂 导出"):
-        excel = generate_professional_excel("ESS_LCOS", {"Tax": tax_rate}, ts, {"Real LCOS": lcos_after})
-        st.download_button("📥 导出", excel, "ESS_Comprehensive_LCOS.xlsx")
+        excel = generate_professional_excel("ESS_LCOS", {"RTE": rte, "Deg": deg}, ts, {"Real LCOS": lcos_after})
+        st.download_button("📥 导出", excel, "ESS_LCOS.xlsx")
 
 # ==========================================
 # 6. Main
@@ -470,7 +486,7 @@ def render_lcos():
 def main():
     st.sidebar.title("📌 投资测算工具")
     mode = st.sidebar.radio("模块", ("光伏+储能 LCOE", "燃气发电 LCOE", "储能 LCOS"))
-    st.sidebar.info("v7.1 | Owner's Comprehensive View")
+    st.sidebar.info("v8.0 | Fully Unlocked & Audited")
     
     if mode == "光伏+储能 LCOE": render_pv_ess_lcoe()
     elif mode == "燃气发电 LCOE": render_gas_lcoe()
