@@ -253,7 +253,7 @@ def render_gas_lcoe():
         c1, c2, c3 = st.columns(3)
         hours = c1.number_input("小时", value=3000.0)
         heat_rate = c2.number_input("热耗", value=0.0095, format="%.4f")
-        price = c3.number_input("气价", value=60.0)
+        price = c3.number_input("气价（元/GJ）", value=60.0)
         fixed_opex = st.number_input("固定运维", value=1200.0)
         f1, f2, f3, f4 = st.columns(4)
         tax_rate = f1.number_input("税率%", value=25.0)/100
@@ -461,3 +461,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
