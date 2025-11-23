@@ -444,11 +444,12 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.info("v4.0 Pro | Investment Grade")
     
-    if mode == "光伏+储能 LCOE": render_pv_ess_lcoe()
+    if mode == "新能源+储能 LCOE": render_pv_ess_lcoe()
     elif mode == "燃气发电 LCOE": render_gas_lcoe()
     elif mode == "储能 LCOS": render_lcos()
 
 if __name__ == "__main__":
     main()
+
 
 
