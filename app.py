@@ -96,15 +96,15 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
 # 3. 模块 A: 光伏 + 储能 LCOE (重构版)
 # ==========================================
 def render_pv_ess_lcoe():
-    st.markdown("## ☀️ 光伏+储能平准化度电成本 (LCOE) 测算")
+    st.markdown("## ⚡️ 新能源+储能平准化度电成本 (LCOE) 测算")
     
     # --- Input Section ---
     with st.container():
         # Block 1: 规模与参数
         st.markdown("### 1. 基础规模与物理参数 (Project Scale)")
         c1, c2, c3, c4, c5 = st.columns(5)
-        pv_cap = c1.number_input("光伏装机容量 (MW)", value=200.0, min_value=0.0)
-        pv_hours = c2.number_input("光伏年利用小时数 (h)", value=2200.0, min_value=0.0)
+        pv_cap = c1.number_input("光伏/风电装机容量 (MW)", value=200.0, min_value=0.0)
+        pv_hours = c2.number_input("光伏/风电年利用小时数 (h)", value=2200.0, min_value=0.0)
         ess_cap = c3.number_input("储能容量 (MWh)", value=120.0, min_value=0.0)
         ess_cycles = c4.number_input("储能年循环次数 (次)", value=1000.0, min_value=0.0)
         ess_eff = c5.number_input("储能系统综合效率 (%)", value=85.0, min_value=0.0, max_value=100.0) / 100
@@ -115,7 +115,7 @@ def render_pv_ess_lcoe():
         st.markdown("### 2. 初始投资概算 (Capex)")
         st.caption("单位：万元 (CNY/AUD Wan)")
         c1, c2, c3 = st.columns(3)
-        capex_pv = c1.number_input("光伏系统总投资", value=50000.0, step=100.0)
+        capex_pv = c1.number_input("光伏/风电系统总投资", value=50000.0, step=100.0)
         capex_ess = c2.number_input("储能系统总投资", value=10000.0, step=100.0)
         capex_grid = c3.number_input("电网配套/升压站投资", value=15000.0, step=100.0)
 
@@ -124,7 +124,7 @@ def render_pv_ess_lcoe():
         # Block 3: 运维支出
         st.markdown("### 3. 运营维护支出 (Opex)")
         c1, c2, c3 = st.columns(3)
-        opex_rate_pv = c1.number_input("光伏年运维费率 (%)", value=1.5, step=0.1) / 100
+        opex_rate_pv = c1.number_input("光伏/风电年运维费率 (%)", value=1.5, step=0.1) / 100
         opex_rate_ess = c2.number_input("储能年运维费率 (%)", value=3.0, step=0.1) / 100
         opex_rate_grid = c3.number_input("配套设施年运维费率 (%)", value=1.0, step=0.1) / 100
 
@@ -142,7 +142,7 @@ def render_pv_ess_lcoe():
             rep_cost = l2.number_input("更换一次性资本开支 (万元)", value=5000.0, help="通常为初始电池部分BOM成本")
             
             l3, l4, l5 = st.columns(3)
-            salvage_rate_pv = l3.number_input("光伏组件残值率 (%)", value=5.0) / 100
+            salvage_rate_pv = l3.number_input("光伏/风电组件残值率 (%)", value=5.0) / 100
             salvage_rate_ess = l4.number_input("储能设备残值率 (%)", value=0.0, help="化学电池通常残值为0") / 100
             salvage_rate_grid = l5.number_input("电网/土地残值率 (%)", value=10.0) / 100
             
@@ -450,3 +450,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
