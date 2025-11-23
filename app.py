@@ -440,7 +440,7 @@ def render_lcos():
 # ==========================================
 def main():
     st.sidebar.title("📌 投资测算工具箱")
-    mode = st.sidebar.radio("选择模型模块", ("光伏+储能 LCOE", "燃气发电 LCOE", "储能 LCOS"))
+    mode = st.sidebar.radio("选择模型模块", ("新能源+储能 LCOE", "燃气发电 LCOE", "储能 LCOS"))
     st.sidebar.markdown("---")
     st.sidebar.info("v4.0 Pro | Investment Grade")
     
@@ -450,4 +450,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
