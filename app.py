@@ -320,7 +320,7 @@ def render_lcos():
         l1, l2, l3 = st.columns(3)
         period = int(l1.number_input("寿命 (年)", value=15))
         rep_yr = l2.number_input("更换年份", 8)
-        rep_cost = l3.number_input("更换费用", 10000.0)
+        rep_cost = l3.number_input("更换费用", min_value=0.0)
 
     # Calc
     total_inv = capex
@@ -410,3 +410,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
