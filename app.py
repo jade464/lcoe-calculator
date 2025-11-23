@@ -113,7 +113,7 @@ def render_pv_ess_lcoe():
 
         # Block 2: 初始投资
         st.markdown("### 2. 初始投资概算 (Capex)")
-        st.caption("单位：万元 (CNY/AUD Wan)")
+        st.caption("单位：万元")
         c1, c2, c3 = st.columns(3)
         capex_pv = c1.number_input("光伏/风电系统总投资", value=50000.0, step=100.0)
         capex_ess = c2.number_input("储能系统总投资", value=10000.0, step=100.0)
@@ -450,6 +450,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
