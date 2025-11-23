@@ -20,20 +20,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. Excel 引擎 (综合展示)
+# 2. Excel 引擎
 # ==========================================
 def generate_professional_excel(model_name, inputs, time_series_data, summary_metrics):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
     worksheet = workbook.add_worksheet('Financial Model')
     
-    # 样式
     fmt_head = workbook.add_format({'bold': True, 'bg_color': '#2F5597', 'font_color': 'white', 'border': 1, 'align': 'center'})
     fmt_sub = workbook.add_format({'bold': True, 'bg_color': '#D9E1F2', 'border': 1})
     fmt_num = workbook.add_format({'border': 1, 'num_format': '#,##0.00'})
     fmt_money = workbook.add_format({'border': 1, 'num_format': '¥ #,##0'})
     
-    # 1. 输入
     worksheet.write('A1', f"{model_name} - 关键假设", workbook.add_format({'bold': True, 'font_size': 14}))
     r = 2
     for k, v in inputs.items():
@@ -41,7 +39,6 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
         worksheet.write(r, 1, v, fmt_num)
         r += 1
         
-    # 2. 瀑布流
     r += 2
     worksheet.write(r, 0, "Cash Flow Waterfall", workbook.add_format({'bold': True, 'font_size': 12}))
     r += 1
@@ -51,7 +48,7 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
     r += 1
     
     rows = [
-        ("物理发电量 (MWh)", "Generation", fmt_num),
+        ("物理发电/放电量 (MWh)", "Generation", fmt_num),
         ("折现系数", "Discount Factor", fmt_num),
         ("折现发电量", "Discounted Gen", fmt_num),
         ("", "", None),
@@ -82,11 +79,10 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
     return output.getvalue()
 
 # ==========================================
-# 3. 模块 A: 光伏 + 储能 LCOE (综合版)
+# 3. 模块 A: 光伏 + 储能 LCOE
 # ==========================================
 def render_pv_ess_lcoe():
     st.markdown("## ☀️ 光伏+储能 LCOE (资产持有者综合视角)")
-    st.info("计算逻辑：对比【税前技术成本】与【税后真实持有成本】，直观展示税盾对项目经济性的贡献。")
     
     with st.container():
         st.markdown("### 1. 规模与物理参数")
@@ -95,7 +91,8 @@ def render_pv_ess_lcoe():
         pv_hours = c2.number_input("利用小时数 (h)", value=2200.0)
         ess_cap = c3.number_input("储能容量 (MWh)", value=120.0)
         ess_cycles = c4.number_input("循环次数", value=1000.0)
-        ess_eff = 0.85
+        # 这里虽然是LCOE，但为了统一也加上效率
+        ess_eff = 0.85 
         
         st.markdown("---")
         st.markdown("### 2. 投资与运维")
@@ -105,395 +102,4 @@ def render_pv_ess_lcoe():
         capex_grid = c3.number_input("配套投资 (万)", value=15000.0, step=100.0)
         
         o1, o2, o3 = st.columns(3)
-        opex_r_pv = o1.number_input("光伏运维%", value=1.5, step=0.1)/100
-        opex_r_ess = o2.number_input("储能运维%", value=3.0, step=0.1)/100
-        opex_r_grid = o3.number_input("配套运维%", value=1.0, step=0.1)/100
-        
-        st.markdown("---")
-        st.markdown("### 3. 税务与财务")
-        f1, f2, f3, f4 = st.columns(4)
-        wacc = f1.number_input("WACC (%)", value=8.0)/100
-        period = int(f2.number_input("周期 (年)", value=25))
-        tax_rate = f3.number_input("所得税率 (%)", value=25.0)/100
-        depr_years = f4.number_input("折旧年限", value=20)
-        
-        st.markdown("---")
-        st.markdown("### 4. 资产管理")
-        l1, l2, l3 = st.columns(3)
-        rep_yr = l1.number_input("更换年份", 10)
-        rep_cost = l2.number_input("更换费用 (万)", 5000.0)
-        salvage_rate = l3.number_input("残值率 (%)", 5.0)/100
-
-    # --- Core Logic ---
-    total_inv = capex_pv + capex_ess + capex_grid
-    years = [0] + list(range(1, period + 1))
-    
-    ts = {k: [] for k in ["Year", "Generation", "Discount Factor", "Discounted Gen", "Cum Discounted Gen",
-                          "Capex", "Opex Pre-tax", "Fuel/Charge Pre-tax", "Replacement", "Salvage Pre-tax",
-                          "Net Cash Flow (Pre-tax)", "Depreciation", "Tax Shield", "Opex Tax Benefit", "Salvage After-tax",
-                          "Net Cost Flow (After-tax)", "PV of Cost (After-tax)", "Cum PV Cost (After-tax)",
-                          "PV of Cost (Pre-tax)", "Cum PV Cost (Pre-tax)"]}
-    
-    # Init Year 0
-    for k in ts: ts[k].append(0)
-    ts["Year"][0] = 0
-    ts["Discount Factor"][0] = 1.0
-    ts["Capex"][0] = total_inv
-    ts["Net Cash Flow (Pre-tax)"][0] = total_inv
-    ts["Net Cost Flow (After-tax)"][0] = total_inv
-    ts["PV of Cost (Pre-tax)"][0] = total_inv
-    ts["Cum PV Cost (Pre-tax)"][0] = total_inv
-    ts["PV of Cost (After-tax)"][0] = total_inv
-    ts["Cum PV Cost (After-tax)"][0] = total_inv
-    
-    annual_depr = total_inv / depr_years
-    cum_denom = 0
-    cum_num_pre = total_inv
-    cum_num_after = total_inv
-    
-    salvage_val_pre = total_inv * salvage_rate
-
-    for y in range(1, period + 1):
-        ts["Year"].append(y)
-        
-        # 1. 物理发电量 (分母，统一使用)
-        deg = 1 - (y-1)*0.005
-        gen = (pv_cap * pv_hours * deg) + (ess_cap * ess_cycles * ess_eff)
-        ts["Generation"].append(gen)
-        
-        df = 1 / ((1+wacc)**y)
-        ts["Discount Factor"].append(df)
-        
-        g_npv = gen * df
-        ts["Discounted Gen"].append(g_npv)
-        cum_denom += g_npv
-        ts["Cum Discounted Gen"].append(cum_denom)
-        
-        # 2. 成本流
-        ts["Capex"].append(0)
-        
-        # Opex
-        opex_pre = (capex_pv*opex_r_pv) + (capex_ess*opex_r_ess) + (capex_grid*opex_r_grid)
-        ts["Opex Pre-tax"].append(opex_pre)
-        ts["Fuel/Charge Pre-tax"].append(0)
-        
-        # Replacement
-        rep = rep_cost if y == rep_yr else 0
-        ts["Replacement"].append(rep)
-        
-        # Salvage Pre-tax
-        sal_pre = -salvage_val_pre if y == period else 0
-        ts["Salvage Pre-tax"].append(sal_pre)
-        
-        # === 路径A: 税前净流 ===
-        net_pre = opex_pre + rep + sal_pre
-        ts["Net Cash Flow (Pre-tax)"].append(net_pre)
-        
-        c_npv_pre = net_pre * df
-        ts["PV of Cost (Pre-tax)"].append(c_npv_pre)
-        cum_num_pre += c_npv_pre
-        ts["Cum PV Cost (Pre-tax)"].append(cum_num_pre)
-        
-        # === 路径B: 税后真实净流 ===
-        # B1. 税盾
-        curr_depr = annual_depr if y <= depr_years else 0
-        ts["Depreciation"].append(curr_depr)
-        
-        tax_shield = curr_depr * tax_rate
-        ts["Tax Shield"].append(-tax_shield) # 负数代表减少成本
-        
-        opex_ben = opex_pre * tax_rate
-        ts["Opex Tax Benefit"].append(-opex_ben)
-        
-        # B2. 残值税后 (流入要缴税，所以流入变少了，即负成本绝对值变小了，即成本变高了一点)
-        # Inflow_After = Inflow_Pre * (1-T). Cost = -Inflow.
-        sal_after = sal_pre * (1 - tax_rate)
-        ts["Salvage After-tax"].append(sal_after)
-        
-        # Net_After = Opex(1-T) + Rep - Shield + Sal(1-T)
-        net_after = (opex_pre - opex_ben) + rep - tax_shield + sal_after
-        ts["Net Cost Flow (After-tax)"].append(net_after)
-        
-        c_npv_after = net_after * df
-        ts["PV of Cost (After-tax)"].append(c_npv_after)
-        cum_num_after += c_npv_after
-        ts["Cum PV Cost (After-tax)"].append(cum_num_after)
-        
-    lcoe_pre = (cum_num_pre / cum_denom) * 10 if cum_denom > 0 else 0
-    lcoe_after = (cum_num_after / cum_denom) * 10 if cum_denom > 0 else 0
-    # 倒算PPA：分母调整 (1-T)
-    lcoe_ppa = lcoe_after / (1 - tax_rate)
-    
-    st.markdown("---")
-    st.markdown("### 📊 综合测算结果")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    col1.metric("💡 税后真实 LCOE (Owner's Cost)", f"{lcoe_after:.4f} 元/kWh", 
-                delta=f"较税前降低 {(lcoe_pre - lcoe_after):.4f}", delta_color="inverse",
-                help="考虑折旧税盾和成本抵税后的实际持有成本")
-    
-    col2.metric("⚙️ 税前技术 LCOE (Pre-tax)", f"{lcoe_pre:.4f} 元/kWh", 
-                help="纯技术经济性指标，不考虑税务因素")
-    
-    col3.metric("📉 盈亏平衡电价 (Breakeven PPA)", f"{lcoe_ppa:.4f} 元/kWh", 
-                help="为了覆盖税后成本，考虑到收入需缴税，你至少需要卖这个价格")
-    
-    with st.expander("📂 导出综合底稿"):
-        excel = generate_professional_excel("PV_ESS_LCOE", {"Tax": tax_rate, "WACC": wacc}, ts, {"Real LCOE": lcoe_after})
-        st.download_button("📥 下载 Excel", excel, "PV_ESS_Comprehensive_LCOE.xlsx")
-
-# ==========================================
-# 4. 燃气 LCOE (综合版)
-# ==========================================
-def render_gas_lcoe():
-    st.markdown("## 🔥 燃气发电 LCOE (资产持有者综合视角)")
-    
-    with st.container():
-        st.markdown("### 1. 规模与投资")
-        c1, c2, c3 = st.columns(3)
-        gas_cap = c1.number_input("装机 (MW)", 360.0)
-        gas_capex = c2.number_input("投资 (万)", 60000.0)
-        wacc = c3.number_input("WACC (%)", 8.0)/100
-        
-        st.markdown("### 2. 运营与燃料")
-        c1, c2, c3 = st.columns(3)
-        hours = c1.number_input("小时数", 3000.0)
-        heat_rate = c2.number_input("热耗 (GJ/kWh)", 0.0095, format="%.4f")
-        price = c3.number_input("气价 (元/GJ)", 60.0)
-        fixed_opex = st.number_input("固定运维 (万/年)", 1200.0)
-
-        st.markdown("### 3. 税务与周期")
-        f1, f2, f3 = st.columns(3)
-        tax_rate = f1.number_input("税率 (%)", 25.0)/100
-        depr_years = f2.number_input("折旧年", 20)
-        period = int(f3.number_input("周期 (年)", 25))
-
-    total_inv = gas_capex
-    years = [0] + list(range(1, period + 1))
-    ts = {k: [] for k in ["Year", "Generation", "Discount Factor", "Discounted Gen", "Cum Discounted Gen",
-                          "Capex", "Opex Pre-tax", "Fuel/Charge Pre-tax", "Replacement", "Salvage Pre-tax",
-                          "Net Cash Flow (Pre-tax)", "Depreciation", "Tax Shield", "Opex Tax Benefit", "Salvage After-tax",
-                          "Net Cost Flow (After-tax)", "PV of Cost (After-tax)", "Cum PV Cost (After-tax)",
-                          "PV of Cost (Pre-tax)", "Cum PV Cost (Pre-tax)"]}
-    
-    for k in ts: ts[k].append(0)
-    ts["Year"][0] = 0
-    ts["Discount Factor"][0] = 1.0
-    ts["Capex"][0] = total_inv
-    ts["Net Cash Flow (Pre-tax)"][0] = total_inv
-    ts["Net Cost Flow (After-tax)"][0] = total_inv
-    ts["PV of Cost (Pre-tax)"][0] = total_inv
-    ts["Cum PV Cost (Pre-tax)"][0] = total_inv
-    ts["PV of Cost (After-tax)"][0] = total_inv
-    ts["Cum PV Cost (After-tax)"][0] = total_inv
-    
-    annual_gen = gas_cap * hours
-    annual_fuel_pre = (annual_gen * 1000 * heat_rate * price) / 10000
-    annual_depr = total_inv / depr_years
-    sal_val_pre = total_inv * 0.05
-    
-    cum_denom = 0
-    cum_num_pre = total_inv
-    cum_num_after = total_inv
-    
-    for y in range(1, period + 1):
-        ts["Year"].append(y)
-        ts["Generation"].append(annual_gen)
-        
-        df = 1 / ((1+wacc)**y)
-        ts["Discount Factor"].append(df)
-        g_npv = annual_gen * df
-        ts["Discounted Gen"].append(g_npv)
-        cum_denom += g_npv
-        ts["Cum Discounted Gen"].append(cum_denom)
-        
-        ts["Capex"].append(0)
-        ts["Opex Pre-tax"].append(fixed_opex)
-        ts["Fuel/Charge Pre-tax"].append(annual_fuel_pre)
-        ts["Replacement"].append(0)
-        
-        sal_pre = -sal_val_pre if y == period else 0
-        ts["Salvage Pre-tax"].append(sal_pre)
-        
-        # Path A
-        net_pre = fixed_opex + annual_fuel_pre + sal_pre
-        ts["Net Cash Flow (Pre-tax)"].append(net_pre)
-        c_npv_pre = net_pre * df
-        ts["PV of Cost (Pre-tax)"].append(c_npv_pre)
-        cum_num_pre += c_npv_pre
-        ts["Cum PV Cost (Pre-tax)"].append(cum_num_pre)
-        
-        # Path B
-        curr_depr = annual_depr if y <= depr_years else 0
-        ts["Depreciation"].append(curr_depr)
-        
-        shield = curr_depr * tax_rate
-        ts["Tax Shield"].append(-shield)
-        
-        opex_ben = (fixed_opex + annual_fuel_pre) * tax_rate
-        ts["Opex Tax Benefit"].append(-opex_ben)
-        
-        sal_after = sal_pre * (1 - tax_rate)
-        ts["Salvage After-tax"].append(sal_after)
-        
-        net_after = (fixed_opex + annual_fuel_pre - opex_ben) - shield + sal_after
-        ts["Net Cost Flow (After-tax)"].append(net_after)
-        
-        c_npv_after = net_after * df
-        ts["PV of Cost (After-tax)"].append(c_npv_after)
-        cum_num_after += c_npv_after
-        ts["Cum PV Cost (After-tax)"].append(cum_num_after)
-        
-    lcoe_pre = (cum_num_pre / cum_denom) * 10 if cum_denom > 0 else 0
-    lcoe_after = (cum_num_after / cum_denom) * 10 if cum_denom > 0 else 0
-    lcoe_ppa = lcoe_after / (1 - tax_rate)
-    
-    st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("💡 税后真实 LCOE", f"{lcoe_after:.4f} 元/kWh", delta="- 税盾收益")
-    c2.metric("⚙️ 税前技术 LCOE", f"{lcoe_pre:.4f} 元/kWh")
-    c3.metric("📉 盈亏平衡 PPA", f"{lcoe_ppa:.4f} 元/kWh")
-    
-    with st.expander("📂 导出"):
-        excel = generate_professional_excel("Gas_LCOE", {"Tax": tax_rate}, ts, {"Real LCOE": lcoe_after})
-        st.download_button("📥 下载 Excel", excel, "Gas_Comprehensive_LCOE.xlsx")
-
-# ==========================================
-# 5. 储能 LCOS (综合版)
-# ==========================================
-def render_lcos():
-    st.markdown("## 🔋 储能 LCOS (资产持有者综合视角)")
-    
-    with st.container():
-        st.markdown("### 1. 规模与投资")
-        c1, c2 = st.columns(2)
-        ess_cap = c1.number_input("容量 (MWh)", value=200.0)
-        capex = c2.number_input("总投资 (万)", value=25000.0)
-        
-        st.markdown("### 2. 运营与充电")
-        c1, c2, c3 = st.columns(3)
-        charge_p = c1.number_input("充电价 (元/kWh)", value=0.20)
-        opex_r = c2.number_input("运维%", value=2.0)/100
-        cycles = c3.number_input("年循环", value=330.0)
-        
-        st.markdown("### 3. 财务与税务")
-        f1, f2, f3 = st.columns(3)
-        wacc = f1.number_input("WACC (%)", value=8.0)/100
-        tax_rate = f2.number_input("税率 (%)", value=25.0)/100
-        depr_years = f3.number_input("折旧年限", value=15)
-        
-        st.markdown("### 4. 周期与置换")
-        l1, l2, l3 = st.columns(3)
-        period = int(l1.number_input("寿命 (年)", value=15))
-        rep_yr = l2.number_input("更换年份", 8)
-        rep_cost = l3.number_input("更换费用", 10000.0)
-
-    # Calc
-    total_inv = capex
-    years = [0] + list(range(1, period + 1))
-    ts = {k: [] for k in ["Year", "Generation", "Discount Factor", "Discounted Gen", "Cum Discounted Gen",
-                          "Capex", "Opex Pre-tax", "Fuel/Charge Pre-tax", "Replacement", "Salvage Pre-tax",
-                          "Net Cash Flow (Pre-tax)", "Depreciation", "Tax Shield", "Opex Tax Benefit", "Salvage After-tax",
-                          "Net Cost Flow (After-tax)", "PV of Cost (After-tax)", "Cum PV Cost (After-tax)",
-                          "PV of Cost (Pre-tax)", "Cum PV Cost (Pre-tax)"]}
-    
-    for k in ts: ts[k].append(0)
-    ts["Year"][0] = 0
-    ts["Discount Factor"][0] = 1.0
-    ts["Capex"][0] = total_inv
-    ts["Net Cash Flow (Pre-tax)"][0] = total_inv
-    ts["Net Cost Flow (After-tax)"][0] = total_inv
-    ts["PV of Cost (Pre-tax)"][0] = total_inv
-    ts["Cum PV Cost (Pre-tax)"][0] = total_inv
-    ts["PV of Cost (After-tax)"][0] = total_inv
-    ts["Cum PV Cost (After-tax)"][0] = total_inv
-    
-    annual_depr = total_inv / depr_years
-    cum_denom = 0
-    cum_num_pre = total_inv
-    cum_num_after = total_inv
-    
-    for y in range(1, period + 1):
-        ts["Year"].append(y)
-        
-        curr_cap = ess_cap * ((1-0.02)**(y-1))
-        dis = curr_cap * cycles * 0.85
-        ts["Generation"].append(dis)
-        
-        df = 1 / ((1+wacc)**y)
-        ts["Discount Factor"].append(df)
-        g_npv = dis * df
-        ts["Discounted Gen"].append(g_npv)
-        cum_denom += g_npv
-        ts["Cum Discounted Gen"].append(cum_denom)
-        
-        ts["Capex"].append(0)
-        
-        opex_pre = capex * opex_r
-        ts["Opex Pre-tax"].append(opex_pre)
-        
-        charge_pre = (curr_cap * cycles * 1000 * charge_p) / 10000
-        ts["Fuel/Charge Pre-tax"].append(charge_pre)
-        
-        rep = rep_cost if y == rep_yr else 0
-        ts["Replacement"].append(rep)
-        
-        # Path A
-        net_pre = opex_pre + charge_pre + rep
-        ts["Net Cash Flow (Pre-tax)"].append(net_pre)
-        c_npv_pre = net_pre * df
-        ts["PV of Cost (Pre-tax)"].append(c_npv_pre)
-        cum_num_pre += c_npv_pre
-        ts["Cum PV Cost (Pre-tax)"].append(cum_num_pre)
-        
-        # Path B
-        curr_depr = annual_depr if y <= depr_years else 0
-        ts["Depreciation"].append(curr_depr)
-        
-        shield = curr_depr * tax_rate
-        ts["Tax Shield"].append(-shield)
-        
-        opex_ben = (opex_pre + charge_pre) * tax_rate
-        ts["Opex Tax Benefit"].append(-opex_ben)
-        
-        # LCOS 残值简化0
-        ts["Salvage Pre-tax"].append(0)
-        ts["Salvage After-tax"].append(0)
-        
-        net_after = (opex_pre + charge_pre - opex_ben) + rep - shield
-        ts["Net Cost Flow (After-tax)"].append(net_after)
-        
-        c_npv_after = net_after * df
-        ts["PV of Cost (After-tax)"].append(c_npv_after)
-        cum_num_after += c_npv_after
-        ts["Cum PV Cost (After-tax)"].append(cum_num_after)
-        
-    lcos_pre = (cum_num_pre / cum_denom) * 10 if cum_denom > 0 else 0
-    lcos_after = (cum_num_after / cum_denom) * 10 if cum_denom > 0 else 0
-    lcos_ppa = lcos_after / (1 - tax_rate)
-    
-    st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("💡 税后真实 LCOS", f"{lcos_after:.4f}", delta="- 税盾")
-    c2.metric("⚙️ 税前技术 LCOS", f"{lcos_pre:.4f}")
-    c3.metric("📉 盈亏平衡 PPA", f"{lcos_ppa:.4f}")
-    
-    with st.expander("📂 导出"):
-        excel = generate_professional_excel("ESS_LCOS", {"Tax": tax_rate}, ts, {"Real LCOS": lcos_after})
-        st.download_button("📥 导出", excel, "ESS_Comprehensive_LCOS.xlsx")
-
-# ==========================================
-# 6. Main
-# ==========================================
-def main():
-    st.sidebar.title("📌 新能源投资测算")
-    mode = st.sidebar.radio("模块", ("光伏+储能 LCOE", "燃气发电 LCOE", "储能 LCOS"))
-    st.sidebar.info("v7.0 | Owner's Comprehensive View")
-    
-    if mode == "光伏+储能 LCOE": render_pv_ess_lcoe()
-    elif mode == "燃气发电 LCOE": render_gas_lcoe()
-    elif mode == "储能 LCOS": render_lcos()
-
-if __name__ == "__main__":
-    main()
+        opex_r_pv = o1.number_input("光伏运维%", value=1.5,
