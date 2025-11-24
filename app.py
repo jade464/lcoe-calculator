@@ -5,7 +5,7 @@ import io
 import xlsxwriter
 
 # --- 1. 全局配置 ---
-st.set_page_config(page_title="新能源投资测算 (Stable v12.1)", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="WEMPR 2020 标准测算工具", layout="wide", page_icon="📘")
 
 st.markdown("""
 <style>
@@ -19,82 +19,79 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- 文档公式展示函数 ---
+def show_formula(is_lcos=False):
+    st.markdown("### 🧮 计算公式 (Source: WEMPR 2020)")
+    if is_lcos:
+        st.latex(r"LCOS = \frac{\sum_{t=1}^{n} \frac{I_t + M_t + F_t}{(1+r)^t}}{\sum_{t=1}^{n} \frac{E_t}{(1+r)^t}}")
+        st.caption("其中：$I_t$=投资支出, $M_t$=运维支出, $F_t$=充电成本(Fuel), $E_t$=放电量, $r$=WACC")
+    else:
+        st.latex(r"LCOE = \frac{\sum_{t=1}^{n} \frac{I_t + M_t + F_t}{(1+r)^t}}{\sum_{t=1}^{n} \frac{E_t}{(1+r)^t}}")
+        st.caption("其中：$I_t$=投资支出, $M_t$=运维支出, $F_t$=燃料支出, $E_t$=发电量, $r$=WACC")
+    st.markdown("---")
+
 # ==========================================
-# 2. 核心引擎：Excel 生成器 (Pandas 暴力清洗版)
+# 2. 核心引擎：Excel 生成器 (含真实 Excel 公式)
 # ==========================================
-def generate_professional_excel(model_name, inputs, time_series_data, summary_metrics):
+def generate_formula_excel(model_name, inputs, df_data, calculated_lcoe):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
-    worksheet = workbook.add_worksheet('Financial Model')
+    worksheet = workbook.add_worksheet('Calculation')
     
-    # 样式定义
+    # 样式
     fmt_head = workbook.add_format({'bold': True, 'bg_color': '#2F5597', 'font_color': 'white', 'border': 1, 'align': 'center'})
     fmt_sub = workbook.add_format({'bold': True, 'bg_color': '#D9E1F2', 'border': 1})
     fmt_num = workbook.add_format({'border': 1, 'num_format': '#,##0.00'})
-    fmt_money = workbook.add_format({'border': 1, 'num_format': '#,##0'}) 
+    fmt_money = workbook.add_format({'border': 1, 'num_format': '#,##0'})
+    fmt_res = workbook.add_format({'bold': True, 'bg_color': '#FFEB9C', 'border': 1, 'num_format': '0.0000'})
     
-    # --- 阶段 0: 数据清洗 ---
-    try:
-        df_raw = pd.DataFrame(time_series_data)
-        df_clean = df_raw.apply(pd.to_numeric, errors='coerce')
-        df_clean = df_clean.fillna(0)
-        df_clean = df_clean.replace([np.inf, -np.inf], 0)
-        clean_ts = df_clean.to_dict(orient='list')
-    except Exception as e:
-        st.error(f"数据序列化错误: {e}")
-        return output.getvalue()
-
-    # --- 阶段 1: 写入假设 ---
+    # 1. 假设区
     worksheet.write('A1', f"{model_name} - Key Assumptions", workbook.add_format({'bold': True, 'font_size': 14}))
     r = 2
     for k, v in inputs.items():
         worksheet.write(r, 0, k, fmt_sub)
-        safe_v = 0
-        try:
-            if pd.isna(v) or np.isinf(v): safe_v = 0
-            else: safe_v = float(v)
-        except:
-            safe_v = 0
-        worksheet.write(r, 1, safe_v, fmt_num)
+        worksheet.write(r, 1, v, fmt_num)
         r += 1
         
-    # --- 阶段 2: 写入瀑布流 ---
+    # 2. 数据表区
     r += 2
-    worksheet.write(r, 0, "Cash Flow Waterfall", workbook.add_format({'bold': True, 'font_size': 12}))
+    worksheet.write(r, 0, "Calculation Waterfall (WEMPR 2020 Method)", workbook.add_format({'bold': True, 'font_size': 12}))
     r += 1
     
-    safe_years = [int(y) for y in clean_ts.get("Year", [])]
-    cols = ["Item"] + [f"Year {y}" for y in safe_years]
+    # 列头
+    cols = list(df_data.columns)
     worksheet.write_row(r, 0, cols, fmt_head)
     r += 1
     
-    rows_config = [
-        ("物理发电量 (MWh)", "Generation", fmt_num),
-        ("折现系数", "Discount Factor", fmt_num),
-        ("折现发电量", "Discounted Gen", fmt_num),
-        ("折现税后电量", "Discounted Gen Tax Adj", fmt_num),
-        ("", "", None),
-        ("1. 初始投资", "Capex", fmt_money),
-        ("2. 运营支出 (税前)", "Opex Pre-tax", fmt_money),
-        ("3. 燃料/充电 (税前)", "Fuel/Charge Pre-tax", fmt_money),
-        ("4. 资产置换", "Replacement", fmt_money),
-        ("5. 残值回收 (税前)", "Salvage Pre-tax", fmt_money),
-        ("", "", None),
-        ("折旧税盾 (+)", "Tax Shield", fmt_money),
-        ("成本抵税 (+)", "Opex Tax Benefit", fmt_money),
-        ("残值缴税 (-)", "Salvage Tax", fmt_money),
-        ("", "", None),
-        ("=== 税后净成本流 ===", "Net Cost Flow (After-tax)", fmt_money),
-        ("折现成本", "PV of Cost", fmt_money),
-        ("累计折现成本", "Cum Numerator", fmt_money)
-    ]
-    
-    for label, key, fmt in rows_config:
-        worksheet.write(r, 0, label, fmt_sub if key=="" or "===" in label else workbook.add_format({'border':1}))
-        if key and key in clean_ts:
-            worksheet.write_row(r, 1, clean_ts[key], fmt)
+    # 写入数据
+    start_row = r + 1
+    for index, row in df_data.iterrows():
+        for col_idx, value in enumerate(row):
+            worksheet.write(r, col_idx, value, fmt_num if col_idx > 0 else None)
         r += 1
-        
+    end_row = r
+    
+    # 3. 写入 Excel 汇总公式
+    r += 2
+    worksheet.write(r, 0, "Total PV Cost (Numerator)", fmt_sub)
+    # 公式: SUM(PV_Cost列) -> 假设 PV_Cost 是倒数第2列 (index -2)
+    cost_col_letter = xlsxwriter.utility.xl_col_to_name(len(cols)-2)
+    formula_cost = f"=SUM({cost_col_letter}{start_row}:{cost_col_letter}{end_row})"
+    worksheet.write_formula(r, 1, formula_cost, fmt_money)
+    
+    r += 1
+    worksheet.write(r, 0, "Total PV Gen (Denominator)", fmt_sub)
+    # 公式: SUM(PV_Gen列) -> 假设 PV_Gen 是倒数第1列 (index -1)
+    gen_col_letter = xlsxwriter.utility.xl_col_to_name(len(cols)-1)
+    formula_gen = f"=SUM({gen_col_letter}{start_row}:{gen_col_letter}{end_row})"
+    worksheet.write_formula(r, 1, formula_gen, fmt_num)
+    
+    r += 2
+    worksheet.write(r, 0, "Calculated LCOE/LCOS", fmt_sub)
+    # 公式: Cost / Gen
+    formula_lcoe = f"=B{r-2}/B{r-1}" # 引用上面的两个单元格
+    worksheet.write_formula(r, 1, formula_lcoe, fmt_res)
+    
     workbook.close()
     return output.getvalue()
 
@@ -102,358 +99,263 @@ def generate_professional_excel(model_name, inputs, time_series_data, summary_me
 # 3. 模块 A: 光伏 + 储能 LCOE
 # ==========================================
 def render_pv_ess_lcoe():
-    st.markdown("## ☀️ 光伏+储能 LCOE (Fix V12.1)")
+    st.markdown("## ☀️ 光伏+储能 LCOE")
+    show_formula(is_lcos=False)
     
     with st.container():
+        st.subheader("1. 物理参数 (Inputs)")
         c1, c2, c3, c4 = st.columns(4)
-        pv_cap = c1.number_input("光伏容量 (MW)", value=200.0, min_value=0.0)
-        pv_hours = c2.number_input("利用小时数 (h)", value=2200.0, min_value=0.0)
-        ess_cap = c3.number_input("储能容量 (MWh)", value=120.0, min_value=0.0)
-        ess_cycles = c4.number_input("循环次数", value=365.0, min_value=0.0)
-        
-        charge_source = st.radio("⚡ 储能电力来源", ("来自光伏", "来自电网"), horizontal=True)
+        pv_cap = c1.number_input("光伏容量 (MW)", value=200.0)
+        pv_hours = c2.number_input("光伏利用小时数 (h)", value=2200.0)
+        ess_cap = c3.number_input("储能容量 (MWh)", value=120.0)
+        ess_cycles = c4.number_input("储能年循环", value=365.0)
         
         t1, t2, t3 = st.columns(3)
-        ess_eff = t1.number_input("RTE 效率%", value=85.0, step=0.1)/100
-        pv_deg = t2.number_input("光伏年衰减%", value=0.5, step=0.1)/100
-        grid_p = 0.0
-        if charge_source == "来自电网":
-            grid_p = t3.number_input("充电电价", value=0.20)
-            
+        ess_eff = t1.number_input("储能效率 RTE (%)", value=85.0)/100
+        pv_deg = t2.number_input("光伏年衰减 (%)", value=0.5)/100
+        source = st.radio("储能电力来源", ("来自光伏", "来自电网"), horizontal=True)
+        grid_price = 0.0
+        if source == "来自电网":
+            grid_price = st.number_input("电网充电电价", value=0.20)
+
         st.markdown("---")
+        st.subheader("2. 成本参数 (Costs)")
         c1, c2, c3 = st.columns(3)
-        capex_pv = c1.number_input("光伏投资(万)", value=50000.0, step=100.0)
-        capex_ess = c2.number_input("储能投资(万)", value=10000.0, step=100.0)
-        capex_grid = c3.number_input("配套投资(万)", value=15000.0, step=100.0)
+        capex_pv = c1.number_input("光伏投资 (万)", value=50000.0)
+        capex_ess = c2.number_input("储能投资 (万)", value=10000.0)
+        capex_grid = c3.number_input("配套投资 (万)", value=15000.0)
         
         o1, o2, o3 = st.columns(3)
-        opex_r_pv = o1.number_input("光伏Opex%", value=1.5)/100
-        opex_r_ess = o2.number_input("储能Opex%", value=3.0)/100
-        opex_r_grid = o3.number_input("配套Opex%", value=1.0)/100
+        opex_pv = o1.number_input("光伏运维%", value=1.5)/100
+        opex_ess = o2.number_input("储能运维%", value=3.0)/100
+        opex_grid = o3.number_input("配套运维%", value=1.0)/100
         
         st.markdown("---")
+        st.subheader("3. 财务参数 (Financials)")
         f1, f2, f3, f4 = st.columns(4)
-        wacc = f1.number_input("WACC%", value=8.0)/100
-        period = int(f2.number_input("周期(年)", value=25, min_value=1))
-        tax_rate = f3.number_input("税率%", value=25.0)/100
-        depr_years = f4.number_input("折旧年", value=20, min_value=0)
-        
-        l1, l2, l3 = st.columns(3)
-        rep_yr = l1.number_input("更换年", value=10)
-        rep_cost = l2.number_input("更换费", value=5000.0)
-        sal_rate = l3.number_input("残值%", value=5.0)/100
+        wacc = f1.number_input("WACC (%)", value=6.0, help="WEMPR range: 6.0% - 8.5%")/100
+        period = int(f2.number_input("周期 (年)", value=25))
+        rep_yr = f3.number_input("更换年份", value=10)
+        rep_cost = f4.number_input("更换费用", value=5000.0)
 
-    # --- Calc ---
-    total_inv = capex_pv + capex_ess + capex_grid
-    years = [0] + list(range(1, period + 1))
+    # --- Calculation ---
+    years = range(0, period + 1)
+    data = []
+    total_capex = capex_pv + capex_ess + capex_grid
     
-    ts = {k: [0.0]*(period+1) for k in ["Year", "Generation", "Discount Factor", "Discounted Gen", "Discounted Gen Tax Adj", "Cum Denominator",
-                          "Capex", "Opex Pre-tax", "Grid Charge Cost", "Replacement", "Salvage Pre-tax",
-                          "Tax Shield", "Opex Tax Benefit", "Salvage Tax",
-                          "Net Cost Flow (After-tax)", "PV of Cost", "Cum Numerator"]}
-    
-    ts["Year"][0] = 0
-    ts["Discount Factor"][0] = 1.0
-    ts["Capex"][0] = total_inv
-    ts["Net Cost Flow (After-tax)"][0] = total_inv
-    ts["PV of Cost"][0] = total_inv
-    ts["Cum Numerator"][0] = total_inv
-    
-    safe_depr_years = max(depr_years, 1) if depr_years > 0 else 9999
-    annual_depr = total_inv / safe_depr_years if depr_years > 0 else 0
-    
-    cum_denom = 0
-    cum_num = total_inv
-    sal_val_pre = total_inv * sal_rate
-
-    for i in range(1, period + 1):
-        y = i 
-        ts["Year"][i] = y
+    for y in years:
+        # 1. Investment (It)
+        # WEMPR 假设 Capex 发生在运营第一年或分摊，这里为简化模型标准，设为Y0
+        it = total_capex if y == 0 else 0
+        if y == rep_yr: it += rep_cost # Replacement is treated as investment
         
-        deg = 1 - (y-1)*pv_deg
-        if deg < 0: deg = 0
-        raw_pv = pv_cap * pv_hours * deg
-        
-        sys_gen = 0
-        grid_cost = 0
-        
-        if charge_source == "来自光伏":
-            loss = (ess_cap * ess_cycles) * (1 - ess_eff)
-            sys_gen = raw_pv - loss
-        else:
-            dis = (ess_cap * ess_cycles) * ess_eff
-            sys_gen = raw_pv + dis
-            grid_cost = (ess_cap * ess_cycles * 1000 * grid_p) / 10000
+        # 2. O&M (Mt)
+        mt = 0
+        if y > 0:
+            mt = (capex_pv*opex_pv) + (capex_ess*opex_ess) + (capex_grid*opex_grid)
             
-        ts["Generation"][i] = sys_gen
-        ts["Grid Charge Cost"][i] = grid_cost
+        # 3. Generation (Et) & Fuel (Ft)
+        et = 0
+        ft = 0
         
-        df = 1 / ((1+wacc)**y)
-        ts["Discount Factor"][i] = df
+        if y > 0:
+            # PV Generation
+            deg = 1 - (y-1)*pv_deg
+            raw_pv = pv_cap * pv_hours * max(deg, 0)
+            
+            if source == "来自光伏":
+                # Ft = 0 (Free sun)
+                # Et = PV - Storage Loss
+                # Loss = Charge * (1 - Eff)
+                loss = (ess_cap * ess_cycles) * (1 - ess_eff)
+                et = raw_pv - loss
+            else:
+                # Ft = Grid Cost
+                # Et = PV + Storage Discharge
+                ft = (ess_cap * ess_cycles * 1000 * grid_price) / 10000 # 万
+                discharge = ess_cap * ess_cycles * ess_eff
+                et = raw_pv + discharge
         
-        g_npv = sys_gen * df
-        ts["Discounted Gen"][i] = g_npv
+        # 4. Discounting
+        df = 1 / ((1 + wacc) ** y)
+        total_cost = it + mt + ft
+        pv_cost = total_cost * df
+        pv_gen = et * df
         
-        g_npv_tax = sys_gen * (1-tax_rate) * df
-        ts["Discounted Gen Tax Adj"][i] = g_npv_tax
-        cum_denom += g_npv_tax
-        ts["Cum Denominator"][i] = cum_denom
+        data.append({
+            "Year": y,
+            "I(t) Investment": it,
+            "M(t) O&M": mt,
+            "F(t) Fuel/Charge": ft,
+            "Total Cost (I+M+F)": total_cost,
+            "E(t) Generation": et,
+            "Discount Factor": df,
+            "PV(Cost)": pv_cost,
+            "PV(Gen)": pv_gen
+        })
         
-        opex = (capex_pv*opex_r_pv) + (capex_ess*opex_r_ess) + (capex_grid*opex_r_grid)
-        ts["Opex Pre-tax"][i] = opex
-        
-        rep = rep_cost if y == rep_yr else 0
-        ts["Replacement"][i] = rep
-        
-        sal = -sal_val_pre if y == period else 0
-        ts["Salvage Pre-tax"][i] = sal
-        
-        cur_depr = annual_depr if y <= depr_years else 0
-        shield = cur_depr * tax_rate
-        ts["Tax Shield"][i] = -shield
-        
-        op_ben = (opex + grid_cost) * tax_rate
-        ts["Opex Tax Benefit"][i] = -op_ben
-        
-        sal_tax = sal * tax_rate if y == period else 0
-        ts["Salvage Tax"][i] = sal_tax
-        
-        net = (opex + grid_cost) + rep + sal - shield - op_ben + sal_tax
-        ts["Net Cost Flow (After-tax)"][i] = net
-        
-        c_npv = net * df
-        ts["PV of Cost"][i] = c_npv
-        cum_num += c_npv
-        ts["Cum Numerator"][i] = cum_num
-        
-    sum_disc_gen = sum(ts["Discounted Gen"])
-    real_lcoe = (cum_num / sum_disc_gen) * 10 if sum_disc_gen > 0 else 0
-    ppa_lcoe = (cum_num / cum_denom) * 10 if cum_denom > 0 else 0
+    df = pd.DataFrame(data)
+    
+    # Final Calc
+    sum_pv_cost = df["PV(Cost)"].sum()
+    sum_pv_gen = df["PV(Gen)"].sum()
+    lcoe = (sum_pv_cost / sum_pv_gen) * 10 if sum_pv_gen > 0 else 0
     
     st.markdown("---")
-    c1, c2 = st.columns(2)
-    c1.metric("💡 真实持有成本 (Real LCOE)", f"{real_lcoe:.4f}")
-    c2.metric("📉 盈亏平衡报价 (PPA Price)", f"{ppa_lcoe:.4f}")
+    st.metric("LCOE Result (WEMPR Method)", f"{lcoe:.4f} 元/kWh")
     
-    with st.expander("📂 导出底稿"):
-        excel = generate_professional_excel("PV_ESS_LCOE", {"Tax": tax_rate}, ts, {"Real LCOE": real_lcoe})
-        st.download_button("📥 下载 Excel (Safe)", excel, "PV_ESS_LCOE.xlsx")
+    with st.expander("📂 导出计算底稿"):
+        st.dataframe(df, use_container_width=True)
+        excel = generate_formula_excel("PV_ESS_LCOE", {"WACC": wacc}, df, lcoe)
+        st.download_button("📥 下载 Excel (含公式)", excel, "PV_ESS_WEMPR.xlsx")
 
 # ==========================================
 # 4. 燃气 LCOE
 # ==========================================
 def render_gas_lcoe():
-    st.markdown("## 🔥 燃气发电 LCOE (Fix V12.1)")
+    st.markdown("## 🔥 燃气发电 LCOE")
+    show_formula(is_lcos=False)
     
     with st.container():
+        st.subheader("Inputs")
         c1, c2, c3 = st.columns(3)
-        gas_cap = c1.number_input("装机(MW)", value=360.0)
-        gas_capex = c2.number_input("投资(万)", value=60000.0)
-        wacc = c3.number_input("WACC%", value=8.0)/100
-        c1, c2, c3 = st.columns(3)
-        hours = c1.number_input("小时", value=3000.0)
-        heat_rate = c2.number_input("热耗", value=0.0095, format="%.4f")
-        price = c3.number_input("气价（元/GJ）", value=60.0)
-        fixed_opex = st.number_input("固定运维", value=1200.0)
-        f1, f2, f3, f4 = st.columns(4)
-        tax_rate = f1.number_input("税率%", value=25.0)/100
-        depr_years = f2.number_input("折旧年", value=20, min_value=0)
-        period = int(f3.number_input("周期", value=25))
-        sal_rate = f4.number_input("残值%", value=5.0)/100
+        mw = c1.number_input("装机 (MW)", value=360.0)
+        capex = c2.number_input("投资 (万)", value=60000.0)
+        wacc = c3.number_input("WACC (%)", value=8.0)/100
+        
+        c4, c5, c6 = st.columns(3)
+        hours = c4.number_input("小时数", value=3000.0)
+        rate = c5.number_input("热耗 (GJ/kWh)", value=0.0095, format="%.4f")
+        price = c6.number_input("气价 (元/GJ)", value=60.0)
+        
+        f1, f2 = st.columns(2)
+        opex = f1.number_input("年运维 (万)", value=1200.0)
+        period = int(f2.number_input("周期", value=25))
 
-    total_inv = gas_capex
-    years = [0] + list(range(1, period + 1))
-    ts = {k: [0.0]*(period+1) for k in ["Year", "Generation", "Discount Factor", "Discounted Gen", "Discounted Gen Tax Adj", "Cum Denominator",
-                          "Capex", "Opex Pre-tax", "Fuel/Charge Pre-tax", "Replacement", "Salvage Pre-tax",
-                          "Tax Shield", "Opex Tax Benefit", "Salvage Tax",
-                          "Net Cost Flow (After-tax)", "PV of Cost", "Cum Numerator"]}
+    years = range(0, period + 1)
+    data = []
     
-    ts["Year"][0] = 0
-    ts["Discount Factor"][0] = 1.0
-    ts["Capex"][0] = total_inv
-    ts["Net Cost Flow (After-tax)"][0] = total_inv
-    ts["PV of Cost"][0] = total_inv
-    ts["Cum Numerator"][0] = total_inv
-    
-    safe_depr_years = max(depr_years, 1) if depr_years > 0 else 9999
-    annual_depr = total_inv / safe_depr_years if depr_years > 0 else 0
-    sal_val_pre = total_inv * sal_rate
-    
-    cum_denom = 0
-    cum_num = total_inv
-    
-    annual_gen = gas_cap * hours
-    annual_fuel = (annual_gen * 1000 * heat_rate * price) / 10000
-    
-    for i in range(1, period + 1):
-        y = i
-        ts["Year"][i] = y
-        ts["Generation"][i] = annual_gen
+    for y in years:
+        # I(t)
+        it = capex if y == 0 else 0
         
-        df = 1 / ((1+wacc)**y)
-        ts["Discount Factor"][i] = df
+        # M(t)
+        mt = opex if y > 0 else 0
         
-        g_npv = annual_gen * df
-        ts["Discounted Gen"][i] = g_npv
+        # E(t)
+        et = mw * hours if y > 0 else 0
         
-        g_npv_tax = annual_gen * (1-tax_rate) * df
-        ts["Discounted Gen Tax Adj"][i] = g_npv_tax
-        cum_denom += g_npv_tax
-        ts["Cum Denominator"][i] = cum_denom
+        # F(t) = Gen * HeatRate * Price
+        ft = (et * 1000 * rate * price) / 10000 if y > 0 else 0
         
-        ts["Opex Pre-tax"][i] = fixed_opex
-        ts["Fuel/Charge Pre-tax"][i] = annual_fuel
+        # Discount
+        df = 1 / ((1 + wacc) ** y)
+        total_cost = it + mt + ft
         
-        cur_depr = annual_depr if y <= depr_years else 0
-        shield = cur_depr * tax_rate
-        ts["Tax Shield"][i] = -shield
+        data.append({
+            "Year": y,
+            "I(t) Invest": it,
+            "M(t) O&M": mt,
+            "F(t) Fuel": ft,
+            "Total Cost": total_cost,
+            "E(t) Gen": et,
+            "Discount Factor": df,
+            "PV(Cost)": total_cost * df,
+            "PV(Gen)": et * df
+        })
         
-        op_ben = (fixed_opex + annual_fuel) * tax_rate
-        ts["Opex Tax Benefit"][i] = -op_ben
-        
-        sal = -sal_val_pre if y == period else 0
-        ts["Salvage Pre-tax"][i] = sal
-        
-        sal_tax = sal * tax_rate if y == period else 0
-        ts["Salvage Tax"][i] = sal_tax
-        
-        net = (fixed_opex + annual_fuel) + sal - shield - op_ben + sal_tax
-        ts["Net Cost Flow (After-tax)"][i] = net
-        
-        c_npv = net * df
-        ts["PV of Cost"][i] = c_npv
-        cum_num += c_npv
-        ts["Cum Numerator"][i] = cum_num
-        
-    real_lcoe = (cum_num / sum(ts["Discounted Gen"])) * 10 if sum(ts["Discounted Gen"]) > 0 else 0
-    ppa_lcoe = (cum_num / cum_denom) * 10 if cum_denom > 0 else 0
+    df = pd.DataFrame(data)
+    lcoe = (df["PV(Cost)"].sum() / df["PV(Gen)"].sum()) * 10 if df["PV(Gen)"].sum() > 0 else 0
     
     st.markdown("---")
-    c1, c2 = st.columns(2)
-    c1.metric("💡 真实 LCOE", f"{real_lcoe:.4f}")
-    c2.metric("📉 报价 PPA", f"{ppa_lcoe:.4f}")
+    st.metric("LCOE Result", f"{lcoe:.4f}")
     
     with st.expander("📂 导出"):
-        excel = generate_professional_excel("Gas_LCOE", {"Tax": tax_rate}, ts, {"Real LCOE": real_lcoe})
-        st.download_button("📥 下载 Excel (Safe)", excel, "Gas_LCOE.xlsx")
+        st.dataframe(df)
+        excel = generate_formula_excel("Gas_LCOE", {"HeatRate": rate}, df, lcoe)
+        st.download_button("📥 下载 Excel", excel, "Gas_WEMPR.xlsx")
 
 # ==========================================
-# 5. 储能 LCOS (Fix V12.1)
+# 5. 储能 LCOS
 # ==========================================
 def render_lcos():
-    st.markdown("## 🔋 储能 LCOS (Fix V12.1)")
+    st.markdown("## 🔋 储能 LCOS")
+    show_formula(is_lcos=True)
     
     with st.container():
+        st.subheader("Inputs")
         c1, c2, c3, c4 = st.columns(4)
-        ess_cap = c1.number_input("容量", value=200.0, min_value=0.0)
-        cycles = c2.number_input("循环", value=330.0, min_value=0.0)
-        rte = c3.number_input("效率%", value=85.0)/100
-        deg = c4.number_input("衰减%", value=2.0)/100
+        mwh = c1.number_input("容量 (MWh)", value=200.0)
+        cycles = c2.number_input("循环次数", value=330.0)
+        rte = c3.number_input("效率 RTE (%)", value=85.0)/100
+        deg = c4.number_input("年衰减 (%)", value=2.0)/100
         
-        c1, c2, c3 = st.columns(3)
-        capex = c1.number_input("投资 (万)", value=25000.0)
-        opex_r = c2.number_input("运维%", value=2.0)/100
-        charge_p = c3.number_input("充电价", value=0.20)
+        c5, c6, c7 = st.columns(3)
+        capex = c5.number_input("投资 (万)", value=25000.0)
+        opex_r = c6.number_input("运维率 (%)", value=2.0)/100
+        charge_p = c7.number_input("充电价", value=0.20)
         
-        f1, f2, f3 = st.columns(3)
-        wacc = f1.number_input("WACC%", value=8.0)/100
-        tax_rate = f2.number_input("税率%", value=25.0)/100
-        # 关键修复点：显式指定 value，避免歧义
-        depr_years = f3.number_input("折旧年", value=15, min_value=0)
-        
-        l1, l2, l3, l4 = st.columns(4)
-        period = int(l1.number_input("寿命", value=15))
-        rep_yr = l2.number_input("更换年", value=8)
-        rep_cost = l3.number_input("更换费", value=10000.0)
-        sal_rate = l4.number_input("残值%", value=3.0)/100
+        f1, f2, f3, f4 = st.columns(4)
+        wacc = f1.number_input("WACC (%)", value=8.0)/100
+        period = int(f2.number_input("寿命", value=15))
+        rep_yr = f3.number_input("更换年", value=8)
+        rep_cost = f4.number_input("更换费", value=10000.0)
 
-    total_inv = capex
-    years = [0] + list(range(1, period + 1))
-    ts = {k: [0.0]*(period+1) for k in ["Year", "Generation", "Discount Factor", "Discounted Gen", "Discounted Gen Tax Adj", "Cum Denominator",
-                          "Capex", "Opex Pre-tax", "Fuel/Charge Pre-tax", "Replacement", "Salvage Pre-tax",
-                          "Tax Shield", "Opex Tax Benefit", "Salvage Tax",
-                          "Net Cost Flow (After-tax)", "PV of Cost", "Cum Numerator"]}
+    years = range(0, period + 1)
+    data = []
     
-    ts["Year"][0] = 0
-    ts["Discount Factor"][0] = 1.0
-    ts["Capex"][0] = total_inv
-    ts["Net Cost Flow (After-tax)"][0] = total_inv
-    ts["PV of Cost"][0] = total_inv
-    ts["Cum Numerator"][0] = total_inv
-    
-    safe_depr = max(depr_years, 1) if depr_years > 0 else 9999
-    annual_depr = total_inv / safe_depr if depr_years > 0 else 0
-    sal_val_pre = total_inv * sal_rate
-    
-    cum_denom = 0
-    cum_num = total_inv
-    
-    for i in range(1, period + 1):
-        y = i
-        ts["Year"][i] = y
+    for y in years:
+        # I(t)
+        it = capex if y == 0 else 0
+        if y == rep_yr: it += rep_cost
         
-        curr_cap = ess_cap * ((1-deg)**(y-1))
-        dis = curr_cap * cycles * rte
-        ts["Generation"][i] = dis
+        # M(t)
+        mt = (capex * opex_r) if y > 0 else 0
         
-        df = 1 / ((1+wacc)**y)
-        ts["Discount Factor"][i] = df
-        g_npv = dis * df
-        ts["Discounted Gen"][i] = g_npv
+        # E(t) Discharge
+        curr_cap = mwh * ((1-deg)**(y-1))
+        et = (curr_cap * cycles * rte) if y > 0 else 0
         
-        g_npv_tax = dis * (1-tax_rate) * df
-        ts["Discounted Gen Tax Adj"][i] = g_npv_tax
-        cum_denom += g_npv_tax
-        ts["Cum Denominator"][i] = cum_denom
+        # F(t) Charging Cost (Fuel)
+        # Charge Energy = Discharge / RTE  OR Capacity * Cycles?
+        # WEMPR assumes charge logic implies efficiency loss. 
+        # Standard LCOS: Charge = Capacity * Cycles. Discharge = Charge * RTE.
+        charge_energy = curr_cap * cycles
+        ft = (charge_energy * 1000 * charge_p) / 10000 if y > 0 else 0
         
-        ts["Opex Pre-tax"][i] = capex * opex_r
+        # Discount
+        df = 1 / ((1 + wacc) ** y)
+        total_cost = it + mt + ft
         
-        charge = (curr_cap * cycles * 1000 * charge_p) / 10000
-        ts["Fuel/Charge Pre-tax"][i] = charge
+        data.append({
+            "Year": y,
+            "I(t) Invest": it,
+            "M(t) O&M": mt,
+            "F(t) Charge": ft,
+            "Total Cost": total_cost,
+            "E(t) Discharge": et,
+            "Discount Factor": df,
+            "PV(Cost)": total_cost * df,
+            "PV(Discharge)": et * df
+        })
         
-        rep = rep_cost if y == rep_yr else 0
-        ts["Replacement"][i] = rep
-        
-        sal = -sal_val_pre if y == period else 0
-        ts["Salvage Pre-tax"][i] = sal
-        
-        cur_depr = annual_depr if y <= depr_years else 0
-        shield = cur_depr * tax_rate
-        ts["Tax Shield"][i] = -shield
-        
-        op_ben = (ts["Opex Pre-tax"][i] + charge) * tax_rate
-        ts["Opex Tax Benefit"][i] = -op_ben
-        
-        sal_tax = sal * tax_rate if y == period else 0
-        ts["Salvage Tax"][i] = sal_tax
-        
-        net = (ts["Opex Pre-tax"][i] + charge) + rep + sal - shield - op_ben + sal_tax
-        ts["Net Cost Flow (After-tax)"][i] = net
-        
-        c_npv = net * df
-        ts["PV of Cost"][i] = c_npv
-        cum_num += c_npv
-        ts["Cum Numerator"][i] = cum_num
-        
-    real_lcos = (cum_num / sum(ts["Discounted Gen"])) * 10 if sum(ts["Discounted Gen"]) > 0 else 0
-    ppa_lcos = (cum_num / cum_denom) * 10 if cum_denom > 0 else 0
+    df = pd.DataFrame(data)
+    lcos = (df["PV(Cost)"].sum() / df["PV(Discharge)"].sum()) * 10 if df["PV(Discharge)"].sum() > 0 else 0
     
     st.markdown("---")
-    c1, c2 = st.columns(2)
-    c1.metric("💡 真实 LCOS", f"{real_lcos:.4f}")
-    c2.metric("📉 报价 PPA", f"{ppa_lcos:.4f}")
+    st.metric("LCOS Result", f"{lcos:.4f}")
     
     with st.expander("📂 导出"):
-        excel = generate_professional_excel("ESS_LCOS", {"Tax": tax_rate}, ts, {"Real LCOS": real_lcos})
-        st.download_button("📥 下载 Excel (Safe)", excel, "ESS_LCOS.xlsx")
+        st.dataframe(df)
+        excel = generate_formula_excel("ESS_LCOS", {"RTE": rte}, df, lcos)
+        st.download_button("📥 下载 Excel", excel, "ESS_WEMPR.xlsx")
 
 # ==========================================
 # 6. Main
 # ==========================================
 def main():
-    st.sidebar.title("📌 投资测算工具")
+    st.sidebar.title("WEMPR 2020 Calculator")
     mode = st.sidebar.radio("模块", ("光伏+储能 LCOE", "燃气发电 LCOE", "储能 LCOS"))
-    st.sidebar.info("v12.1 | Final Fix")
     
     if mode == "光伏+储能 LCOE": render_pv_ess_lcoe()
     elif mode == "燃气发电 LCOE": render_gas_lcoe()
@@ -461,4 +363,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
