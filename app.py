@@ -297,16 +297,16 @@ def render_module(tech_type):
             
             st.markdown("**💰 成本明细**")
             cc1, cc2, cc3 = st.columns(3)
-            cx_pv = cc1.number_input("光伏造价 (万)", 50000.0)
-            cx_ess = cc2.number_input("储能造价 (万)", 10000.0)
-            cx_grid = cc3.number_input("配套造价 (万)", 15000.0)
+            cx_pv = cc1.number_input("光伏造价 (万)", min_value=0.0)
+            cx_ess = cc2.number_input("储能造价 (万)", min_value=0.0)
+            cx_grid = cc3.number_input("配套造价 (万)", min_value=0.0)
             capex_total = cx_pv + cx_ess + cx_grid
             
             st.markdown("**🔧 运维明细**")
             oo1, oo2, oo3 = st.columns(3)
-            op_pv = oo1.number_input("光伏运维%", 1.5)/100
-            op_ess = oo2.number_input("储能运维%", 3.0)/100
-            op_grid = oo3.number_input("配套运维%", 1.0)/100
+            op_pv = oo1.number_input("光伏运维%", min_value=0.0)/100
+            op_ess = oo2.number_input("储能运维%", min_value=0.0)/100
+            op_grid = oo3.number_input("配套运维%", min_value=0.0)/100
             opex_total = (cx_pv*op_pv) + (cx_ess*op_ess) + (cx_grid*op_grid)
             
             # 燃料/充电成本
@@ -419,4 +419,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
