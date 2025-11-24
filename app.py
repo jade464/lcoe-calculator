@@ -289,11 +289,11 @@ def render_module(tech_type):
         
         if tech_type == "光伏+储能":
             source = c1.radio("储能电力来源", ("光伏", "电网"))
-            cap_mw = c2.number_input("光伏容量 (MW)", 200.0)
-            hours = c3.number_input("光伏小时数", 2200.0)
-            cap_ess = c1.number_input("储能容量 (MWh)", 120.0)
-            cycles = c2.number_input("循环次数", 365.0)
-            eff = c3.number_input("效率 RTE%", 85.0)/100
+            cap_mw = c2.number_input("光伏容量 (MW)", min_value=0.0)
+            hours = c3.number_input("光伏小时数", min_value=0.0)
+            cap_ess = c1.number_input("储能容量 (MWh)", min_value=0.0)
+            cycles = c2.number_input("循环次数", min_value=0.0)
+            eff = c3.number_input("效率 RTE%", min_value=0.0)/100
             
             st.markdown("**💰 成本明细**")
             cc1, cc2, cc3 = st.columns(3)
@@ -311,7 +311,7 @@ def render_module(tech_type):
             
             # 燃料/充电成本
             if source == "电网":
-                p_grid = st.number_input("充电电价", 0.20)
+                p_grid = st.number_input("充电电价", min_value=0.0)
                 fuel_cost = (cap_ess * cycles * 1000 * p_grid) / 10000
             
             # 发电量序列
@@ -327,25 +327,25 @@ def render_module(tech_type):
                         gen_list.append(base + (cap_ess * cycles * eff))
                         
         elif tech_type == "燃气发电":
-            cap_mw = c1.number_input("装机 (MW)", 360.0)
-            hours = c2.number_input("小时数", 3000.0)
-            rate = c3.number_input("热耗 (GJ/kWh)", 0.0095, format="%.4f")
-            price = c1.number_input("气价 (元/GJ)", 60.0)
+            cap_mw = c1.number_input("装机 (MW)", min_value=0.0)
+            hours = c2.number_input("小时数", min_value=0.0)
+            rate = c3.number_input("热耗 (GJ/kWh)", min_value=0.0, format="%.4f")
+            price = c1.number_input("气价 (元/GJ)", min_value=0.0)
             
-            capex_total = c2.number_input("总投资 (万)", 60000.0)
-            opex_total = c3.number_input("固定运维 (万)", 1200.0)
+            capex_total = c2.number_input("总投资 (万)", min_value=0.0)
+            opex_total = c3.number_input("固定运维 (万)", min_value=0.0)
             
             fuel_cost = (cap_mw * hours * 1000 * rate * price) / 10000
             gen_list = [0] + [cap_mw * hours] * period
             
         elif tech_type == "储能 LCOS":
-            cap_mwh = c1.number_input("容量 (MWh)", 200.0)
-            cycles = c2.number_input("循环", 330.0)
-            eff = c3.number_input("效率%", 85.0)/100
+            cap_mwh = c1.number_input("容量 (MWh)", min_value=0.0)
+            cycles = c2.number_input("循环", min_value=0.0)
+            eff = c3.number_input("效率%", min_value=0.0)/100
             
-            capex_total = c1.number_input("总投资 (万)", 25000.0)
-            opex_total = c2.number_input("总运维 (万)", 500.0)
-            p_charge = c3.number_input("充电价", 0.20)
+            capex_total = c1.number_input("总投资 (万)", min_value=0.0)
+            opex_total = c2.number_input("总运维 (万)", min_value=0.0)
+            p_charge = c3.number_input("充电价", min_value=0.0)
             
             fuel_cost = (cap_mwh * cycles * 1000 * p_charge) / 10000
             period = 15
@@ -364,17 +364,17 @@ def render_module(tech_type):
     with col_f2:
         st.markdown("###### 🏛️ Lazard 参数 (股东回报测算)")
         f_a, f_b = st.columns(2)
-        debt_ratio = f_a.number_input("债权比例 (Debt Ratio %)", value=60.0) / 100
-        cost_debt = f_b.number_input("贷款利率 (Interest Rate %)", value=5.0) / 100
-        cost_equity = f_a.number_input("股权成本 (ROE/IRR %)", value=12.0) / 100
-        tax_rate = f_b.number_input("所得税率 (Tax %)", value=25.0) / 100
+        debt_ratio = f_a.number_input("债权比例 (Debt Ratio %)", min_value=0.0) / 100
+        cost_debt = f_b.number_input("贷款利率 (Interest Rate %)", min_value=0.0) / 100
+        cost_equity = f_a.number_input("股权成本 (ROE/IRR %)", min_value=0.0) / 100
+        tax_rate = f_b.number_input("所得税率 (Tax %)", min_value=0.0) / 100
         
     # 残值率 (Added per request)
     st.markdown("###### ♻️ 资产回收")
     sal_col1, sal_col2, sal_col3 = st.columns(3)
-    salvage_rate = sal_col1.number_input("期末残值率 (%)", 5.0) / 100
-    rep_yr = sal_col2.number_input("设备置换年份", 10)
-    rep_cost = sal_col3.number_input("置换成本 (万)", 5000.0)
+    salvage_rate = sal_col1.number_input("期末残值率 (%)", min_value=0.0) / 100
+    rep_yr = sal_col2.number_input("设备置换年份", min_value=0.0)
+    rep_cost = sal_col3.number_input("置换成本 (万)", min_value=0.0)
     
     depr_years = 20 # Simplified hidden input or add to UI if needed
 
@@ -419,5 +419,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
