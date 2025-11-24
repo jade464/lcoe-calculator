@@ -359,7 +359,7 @@ def render_module(tech_type):
     
     with col_f1:
         st.markdown("###### 📘 WEMPR 参数 (技术测算)")
-        wacc_tech = st.number_input("全投资 WACC (%)", 7.0) / 100
+        wacc_tech = st.number_input("全投资 WACC (%)", min_value=0.0) / 100
         
     with col_f2:
         st.markdown("###### 🏛️ Lazard 参数 (股东回报测算)")
@@ -419,3 +419,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
