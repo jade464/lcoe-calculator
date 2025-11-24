@@ -3,10 +3,9 @@ import pandas as pd
 import numpy as np
 import io
 import xlsxwriter
-import string
 
 # --- 1. 全局配置 ---
-st.set_page_config(page_title="新能源投资建模 (Live Formulas)", layout="wide", page_icon="🏗️")
+st.set_page_config(page_title="新能源投资测算 (v16.0 Hybrid)", layout="wide", page_icon="💼")
 
 st.markdown("""
 <style>
@@ -21,353 +20,402 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 核心引擎：Excel 动态公式生成器
+# 2. 核心引擎：Excel 混合生成器 (Hardcode Data + Formula Result)
 # ==========================================
-def generate_live_formula_excel(model_type, params):
+def generate_hybrid_excel(model_name, inputs, df_wempr, lcoe_wempr, df_lazard, price_lazard):
     output = io.BytesIO()
     workbook = xlsxwriter.Workbook(output, {'in_memory': True})
     
     # --- 样式 ---
-    fmt_header = workbook.add_format({'bold': True, 'bg_color': '#2F5597', 'font_color': 'white', 'border': 1, 'align': 'center'})
-    fmt_input_label = workbook.add_format({'bg_color': '#E7E6E6', 'border': 1})
-    fmt_input_val = workbook.add_format({'bg_color': '#FFF2CC', 'border': 1, 'num_format': '#,##0.00'}) # 黄色底代表输入
-    fmt_calc_val = workbook.add_format({'bg_color': '#F2F2F2', 'border': 1, 'num_format': '#,##0.00', 'italic': True}) # 灰色底代表计算
+    fmt_head = workbook.add_format({'bold': True, 'bg_color': '#2F5597', 'font_color': 'white', 'border': 1, 'align': 'center'})
+    fmt_sub = workbook.add_format({'bold': True, 'bg_color': '#D9E1F2', 'border': 1})
     fmt_num = workbook.add_format({'border': 1, 'num_format': '#,##0.00'})
     fmt_money = workbook.add_format({'border': 1, 'num_format': '#,##0'})
-    fmt_res = workbook.add_format({'bold': True, 'bg_color': '#C6EFCE', 'border': 2, 'num_format': '0.0000'})
+    # 结果单元格样式：黄色背景，突出显示
+    fmt_res = workbook.add_format({'bold': True, 'bg_color': '#FFFF00', 'border': 2, 'num_format': '0.0000', 'font_size': 12})
+    
+    # --- 辅助函数：清洗数据防止报错 ---
+    def clean_df(df):
+        return df.fillna(0).replace([np.inf, -np.inf], 0)
 
-    # 创建 Sheet 1: WEMPR (技术成本)
+    df_w = clean_df(df_wempr)
+    df_l = clean_df(df_lazard)
+
+    # ================= Sheet 1: WEMPR (Technical) =================
     ws1 = workbook.add_worksheet('WEMPR (Tech)')
-    # 创建 Sheet 2: Lazard (财务成本)
-    ws2 = workbook.add_worksheet('Lazard (Finance)')
-
-    # ==========================================
-    # 通用：写入假设区 (Inputs Block)
-    # ==========================================
-    # 我们需要记录每个参数在 Excel 中的单元格地址 (e.g. "B2"), 以便后续写公式引用
-    # 假设区结构：A列Label, B列Value
     
-    ref_map = {} # 存储参数名对应的单元格地址
-    
-    def write_inputs(ws):
-        ws.set_column('A:A', 30)
-        ws.set_column('B:B', 15)
-        ws.write('A1', f"{model_type} - Key Assumptions", workbook.add_format({'bold':True, 'font_size':12}))
-        
-        row = 1
-        # 1. 物理与造价
-        ws.write(row, 0, "--- Physical & Capex ---", workbook.add_format({'bold':True}))
-        row += 1
-        
-        # 动态写入传入的 params
-        for k, v in params.items():
-            # 如果是计算字段（hidden），则写入公式或值但不作为输入框高亮
-            # 这里简化：所有传入的 params 视为输入或预计算常量
-            ws.write(row, 0, k, fmt_input_label)
-            ws.write(row, 1, v, fmt_input_val)
-            cell_ref = f"$B${row+1}" # 绝对引用
-            ref_map[k] = cell_ref
-            row += 1
-            
-        return row # 返回当前行号
-
-    # 写入 Sheet 1 假设
-    current_row = write_inputs(ws1)
-    
-    # 在假设区底部增加一些 Excel 内部计算的中间变量 (Calculated Constants)
-    # 比如 Total Capex, Annual Opex
-    # 这样下面的瀑布流公式更干净
-    
-    r = current_row
-    ws1.write(r, 0, "--- Calculated Constants ---", workbook.add_format({'bold':True}))
-    r += 1
-    
-    # 计算 Total Capex
-    ws1.write(r, 0, "Total Initial Capex", fmt_input_label)
-    # 公式: PV_Capex + ESS_Capex + Grid_Capex
-    # 注意：必须确保 params 里有这些 key
-    f_capex = f"={ref_map.get('PV Capex (万)', 0)} + {ref_map.get('ESS Capex (万)', 0)} + {ref_map.get('Grid Capex (万)', 0)}"
-    ws1.write_formula(r, 1, f_capex, fmt_calc_val)
-    ref_map['Total_Capex'] = f"$B${r+1}"
-    r += 1
-    
-    # 计算 Annual Opex
-    ws1.write(r, 0, "Annual Total Opex", fmt_input_label)
-    # 公式: PV_Cap*Rate + ESS_Cap*Rate + ...
-    # 为简化公式长度，这里假设 Opex Rate 是百分比
-    f_opex = (f"={ref_map.get('PV Capex (万)', 0)}*{ref_map.get('PV Opex Rate (%)', 0)} + "
-              f"{ref_map.get('ESS Capex (万)', 0)}*{ref_map.get('ESS Opex Rate (%)', 0)} + "
-              f"{ref_map.get('Grid Capex (万)', 0)}*{ref_map.get('Grid Opex Rate (%)', 0)}")
-    ws1.write_formula(r, 1, f_opex, fmt_calc_val)
-    ref_map['Total_Opex'] = f"$B${r+1}"
-    r += 1
-    
-    # ==========================================
-    # Sheet 1: WEMPR 瀑布流 (含公式)
-    # ==========================================
-    r += 2
-    ws1.write(r, 0, "WEMPR Cash Flow Waterfall", workbook.add_format({'bold':True}))
-    r += 1
-    
-    headers = ["Year", "Generation", "Discount Factor", "Capex (It)", "Opex (Mt)", "Fuel/Charge (Ft)", "Total Cost", "PV(Cost)", "PV(Gen)"]
-    ws1.write_row(r, 0, headers, fmt_header)
-    r += 1
-    
-    start_data_row = r + 1
-    period = int(params.get('Period (Years)', 25))
-    
-    for y in range(period + 1):
-        row_num = r + 1
-        # A: Year
-        ws1.write(r, 0, y, fmt_num)
-        
-        # B: Generation (简化：公式化引用参数)
-        # 公式: IF(Year>0, PV_Gen + ESS_Gen, 0) - 这里为了简化Excel公式复杂度，我们直接写数值，
-        # 但对于复杂的衰减，我们最好还是用Python算好数值填进去，或者在Excel里写长公式。
-        # 为了响应“所有计算体现公式”，我们尝试写一个简单的线性衰减公式
-        if y == 0:
-            ws1.write(r, 1, 0, fmt_num)
-        else:
-            # Gen = (Cap * Hours * (1 - (y-1)*deg))
-            # 这是一个近似，为了Excel可读性
-            deg_ref = ref_map.get('PV Degradation (%)', 0)
-            cap_ref = ref_map.get('PV Capacity (MW)', 0)
-            hr_ref = ref_map.get('PV Hours', 0)
-            # Excel Formula: = Cap * Hr * MAX(1 - (Year-1)*Deg, 0)
-            # 这里的 A{row_num} 是年份
-            formula_gen = f"={cap_ref}*{hr_ref}*MAX(1-(A{row_num}-1)*{deg_ref}, 0)"
-            ws1.write_formula(r, 1, formula_gen, fmt_num)
-            
-        # C: Discount Factor (WEMPR WACC)
-        # = 1 / (1 + WACC)^Year
-        wacc_ref = ref_map.get('WEMPR WACC (%)', 0.07)
-        ws1.write_formula(r, 2, f"=1/((1+{wacc_ref})^A{row_num})", fmt_num)
-        
-        # D: Capex (It)
-        # = IF(Year=0, Total_Capex, IF(Year=RepYear, RepCost, 0))
-        rep_yr_ref = ref_map.get('Replacement Year', 10)
-        rep_cost_ref = ref_map.get('Replacement Cost', 0)
-        tot_capex_ref = ref_map['Total_Capex']
-        f_invest = f"=IF(A{row_num}=0, {tot_capex_ref}, IF(A{row_num}={rep_yr_ref}, {rep_cost_ref}, 0))"
-        ws1.write_formula(r, 3, f_invest, fmt_money)
-        
-        # E: Opex (Mt)
-        # = IF(Year>0, Total_Opex, 0)
-        f_op = f"=IF(A{row_num}>0, {ref_map['Total_Opex']}, 0)"
-        ws1.write_formula(r, 4, f_op, fmt_money)
-        
-        # F: Fuel/Charge (Ft) - 简化为 0 或根据 Grid 逻辑
-        ws1.write(r, 5, 0, fmt_money) 
-        
-        # G: Total Cost = D+E+F
-        ws1.write_formula(r, 6, f"=SUM(D{row_num}:F{row_num})", fmt_money)
-        
-        # H: PV(Cost) = Cost * DF
-        ws1.write_formula(r, 7, f"=G{row_num}*C{row_num}", fmt_money)
-        
-        # I: PV(Gen) = Gen * DF
-        ws1.write_formula(r, 8, f"=B{row_num}*C{row_num}", fmt_num)
-        
+    # 1. Inputs
+    ws1.write('A1', f"{model_name} - Technical Assumptions", workbook.add_format({'bold': True, 'font_size': 14}))
+    r = 2
+    for k, v in inputs.items():
+        ws1.write(r, 0, k, fmt_sub)
+        # 简单的类型检查
+        val = v if isinstance(v, (int, float, str)) else str(v)
+        ws1.write(r, 1, val, fmt_num if isinstance(val, (int, float)) else None)
         r += 1
         
-    end_data_row = r
-    
-    # 汇总结果
+    # 2. Data Table (Hardcoded Values)
     r += 2
-    ws1.write(r, 6, "Sum PV:", fmt_header)
-    ws1.write_formula(r, 7, f"=SUM(H{start_data_row}:H{end_data_row})", fmt_money) # Numerator
-    ws1.write_formula(r, 8, f"=SUM(I{start_data_row}:I{end_data_row})", fmt_num)   # Denominator
+    ws1.write(r, 0, "Cash Flow Table (Hardcoded Values)", workbook.add_format({'bold': True}))
+    r += 1
     
+    cols1 = list(df_w.columns)
+    ws1.write_row(r, 0, cols1, fmt_head)
+    r += 1
+    
+    start_row = r + 1
+    for _, row in df_w.iterrows():
+        for c, val in enumerate(row):
+            ws1.write(r, c, val, fmt_money if "Cost" in cols1[c] or "Invest" in cols1[c] else fmt_num)
+        r += 1
+    end_row = r
+    
+    # 3. Summary Formulas (The "Live" Part)
     r += 2
-    ws1.write(r, 6, "WEMPR LCOE:", fmt_header)
-    # = Numerator / Denominator * 10
-    ws1.write_formula(r, 7, f"=H{r-1}/I{r-1}*10", fmt_res)
+    ws1.write(r, 0, ">>> 汇总计算 (Excel Formulas)", fmt_sub)
+    
+    # 找到 PV(Cost) 和 PV(Gen) 的列索引
+    try:
+        idx_cost = cols1.index("PV(Cost)")
+        idx_gen = cols1.index("PV(Gen)")
+        
+        col_char_cost = xlsxwriter.utility.xl_col_to_name(idx_cost)
+        col_char_gen = xlsxwriter.utility.xl_col_to_name(idx_gen)
+        
+        # 写入 SUM 公式
+        ws1.write(r, idx_cost, "Total Cost:", fmt_sub)
+        ws1.write_formula(r, idx_cost + 1, f"=SUM({col_char_cost}{start_row}:{col_char_cost}{end_row})", fmt_money)
+        
+        ws1.write(r+1, idx_cost, "Total Gen:", fmt_sub)
+        ws1.write_formula(r+1, idx_cost + 1, f"=SUM({col_char_gen}{start_row}:{col_char_gen}{end_row})", fmt_num)
+        
+        ws1.write(r+2, idx_cost, "LCOE:", fmt_sub)
+        # LCOE Formula: Cost / Gen * 10
+        cell_cost_sum = xlsxwriter.utility.xl_rowcol_to_cell(r, idx_cost + 1)
+        cell_gen_sum = xlsxwriter.utility.xl_rowcol_to_cell(r+1, idx_cost + 1)
+        ws1.write_formula(r+2, idx_cost + 1, f"={cell_cost_sum}/{cell_gen_sum}*10", fmt_res)
+        
+    except ValueError:
+        pass # 如果列名不对，跳过公式生成
 
-    # ==========================================
-    # Sheet 2: Lazard (Finance)
-    # ==========================================
-    # 复用 Inputs，但增加 Lazard 特有计算
-    # Lazard 核心：Equity Cash Flow = (Rev - Opex - Int)*(1-T) + Depr*T - Princ - Capex + Debt_In
-    # 由于需要倒算 Price，我们构建 Num 和 Denom
-    
-    # 这里为了简化演示，我们直接在 Sheet 2 引用 Sheet 1 的输入
-    # 并展示 Tax Shield 计算公式
-    
-    ws2.write('A1', "Lazard Financial View (Levered & Taxed)", workbook.add_format({'bold':True, 'font_size':14}))
+    # ================= Sheet 2: Lazard (Financial) =================
+    ws2 = workbook.add_worksheet('Lazard (Investor)')
+    ws2.write('A1', "Lazard Investor View (Levered Cash Flow)", workbook.add_format({'bold': True, 'font_size': 14}))
     
     r = 3
-    l_headers = ["Year", "Opex After-Tax", "Depreciation", "Tax Shield", "Debt Interest", "Interest Shield", "Net Cost Flow", "PV Factor (Equity)", "PV Cost"]
-    ws2.write_row(r, 0, l_headers, fmt_header)
+    cols2 = list(df_l.columns)
+    ws2.write_row(r, 0, cols2, fmt_head)
     r += 1
     
-    # 引用参数
-    tax_ref = ref_map.get('Tax Rate (%)', 0.25)
-    eq_ref = ref_map.get('Cost of Equity (%)', 0.12)
-    depr_yr_ref = ref_map.get('Depreciation Years', 20)
-    
-    start_l_row = r + 1
-    
-    for y in range(period + 1):
-        row_num = r + 1
-        ws2.write(r, 0, y, fmt_num)
-        
-        # Opex After Tax: = 'WEMPR (Tech)'!E_Row * (1 - Tax)
-        ws2.write_formula(r, 1, f"='WEMPR (Tech)'!E{row_num}*(1-{tax_ref})", fmt_money)
-        
-        # Depreciation: = IF(Year<=DeprYear, TotalCapex/DeprYear, 0)
-        # 注意：这里 Year 是 A 列
-        f_depr = f"=IF(AND(A{row_num}>0, A{row_num}<={depr_yr_ref}), {ref_map['Total_Capex']}/{depr_yr_ref}, 0)"
-        ws2.write_formula(r, 2, f_depr, fmt_money)
-        
-        # Tax Shield: = Depr * Tax (Negative Cost)
-        ws2.write_formula(r, 3, f"=-B{row_num}*{tax_ref}", fmt_money)
-        
-        # Interest & Principal (Simplification: Assuming linear paydown logic is hard to formula-ize dynamically without a schedule table)
-        # 这里为了 Excel 稳健性，我们暂不展开复杂的 Debt Schedule 公式，
-        # 而是展示核心的 Tax Shield 和 Opex 抵税逻辑
-        
+    start_row = r + 1
+    for _, row in df_l.iterrows():
+        for c, val in enumerate(row):
+            ws2.write(r, c, val, fmt_money if c > 0 else fmt_num)
         r += 1
+    end_row = r
+    
+    # Formula for Lazard Price
+    # Price = NPV(Required Cash) / NPV(Gen_After_Tax)
+    try:
+        idx_req = cols2.index("Required Cash Flow")
+        idx_gen_tax = cols2.index("Discounted Gen(1-T)")
+        
+        col_char_req = xlsxwriter.utility.xl_col_to_name(idx_req)
+        col_char_gen = xlsxwriter.utility.xl_col_to_name(idx_gen_tax)
+        
+        r += 2
+        ws2.write(r, 0, "Total Required Equity Cash (PV):", fmt_sub)
+        ws2.write_formula(r, 1, f"=SUM({col_char_req}{start_row}:{col_char_req}{end_row})", fmt_money)
+        
+        ws2.write(r+1, 0, "Total Effective Gen (PV):", fmt_sub)
+        ws2.write_formula(r+1, 1, f"=SUM({col_char_gen}{start_row}:{col_char_gen}{end_row})", fmt_num)
+        
+        ws2.write(r+2, 0, "Lazard Required Price:", fmt_sub)
+        cell_req_sum = "B" + str(r+1)
+        cell_gen_sum = "B" + str(r+2)
+        ws2.write_formula(r+2, 1, f"={cell_req_sum}/{cell_gen_sum}*10", fmt_res)
+        
+    except ValueError:
+        pass
 
     workbook.close()
     return output.getvalue()
 
 # ==========================================
-# 3. UI 渲染函数
+# 3. 计算引擎 (Python Logic)
 # ==========================================
-def render_pv_storage_ui():
-    st.markdown("## ☀️ 光伏+储能 (双轨制 - 动态公式版)")
+def calc_wempr(years, capex, opex, fuel, gen_list, wacc, rep_yr, rep_cost, salvage_rate):
+    # 纯技术模型：全投资，无税，无债
+    data = []
+    salvage_val = capex * salvage_rate
     
+    for y in years:
+        it = capex if y == 0 else 0
+        if y == rep_yr: it += rep_cost
+        
+        mt = opex if y > 0 else 0
+        ft = fuel if y > 0 else 0
+        et = gen_list[y] if y < len(gen_list) else 0
+        
+        # 残值作为负成本
+        sal = -salvage_val if y == years[-1] else 0
+        
+        total_cost = it + mt + ft + sal
+        df = 1 / ((1 + wacc) ** y)
+        
+        data.append({
+            "Year": y,
+            "Generation": et,
+            "Capex": it,
+            "Opex": mt,
+            "Fuel": ft,
+            "Salvage": sal,
+            "Total Cost": total_cost,
+            "DF": df,
+            "PV(Gen)": et * df,
+            "PV(Cost)": total_cost * df
+        })
+    
+    df = pd.DataFrame(data)
+    lcoe = (df["PV(Cost)"].sum() / df["PV(Gen)"].sum()) * 10 if df["PV(Gen)"].sum() > 0 else 0
+    return lcoe, df
+
+def calc_lazard(years, capex, opex, fuel, gen_list, 
+                debt_ratio, cost_debt, cost_equity, tax_rate, depr_years, 
+                rep_yr, rep_cost, salvage_rate):
+    # 财务模型：股权视角，含税，含债
+    
+    initial_debt = capex * debt_ratio
+    initial_equity = capex * (1 - debt_ratio)
+    
+    # 贷款偿还模拟 (等额本金)
+    loan_term = min(len(years)-1, 15)
+    principal_per_year = initial_debt / loan_term if loan_term > 0 else 0
+    
+    debt_bal = initial_debt
+    salvage_val = capex * salvage_rate
+    
+    data = []
+    
+    for y in years:
+        if y == 0:
+            data.append({
+                "Year": 0, "Required Cash Flow": initial_equity, "Discounted Gen(1-T)": 0,
+                "Generation":0, "Interest":0, "Principal":0, "Tax Shield":0
+            })
+            continue
+            
+        et = gen_list[y] if y < len(gen_list) else 0
+        
+        # 1. 运营流 (税后)
+        ops_cost = (opex + fuel) * (1 - tax_rate)
+        
+        # 2. 债务流
+        interest = debt_bal * cost_debt
+        principal = principal_per_year if y <= loan_term else 0
+        debt_bal -= principal
+        if debt_bal < 0: debt_bal = 0
+        
+        # 利息抵税后的实际支付
+        int_after_tax = interest * (1 - tax_rate)
+        
+        # 3. 税盾 (非现金流入)
+        # 假设直线折旧
+        depr = capex / depr_years if y <= depr_years else 0
+        shield = depr * tax_rate
+        
+        # 4. 置换与残值
+        rep = rep_cost if y == rep_yr else 0
+        # 残值流入需缴税，故抵扣成本 = Sal * (1-T)
+        sal_benefit = 0
+        if y == years[-1]:
+            sal_benefit = salvage_val * (1 - tax_rate)
+            
+        # === 股权视角的年度资金需求 (Required Revenue) ===
+        # 逻辑：为了让 Equity NPV=0，当年的收入(税后)必须覆盖所有支出(税后)
+        # Req_Rev * (1-T) = Ops(1-T) + Int(1-T) + Principal + Rep - Shield - Sal_Benefit
+        # 移项得：
+        # Year_Req_Cash (分子) = Ops(1-T) + Int(1-T) + Principal + Rep - Shield - Sal_Benefit
+        # Discounted Gen (分母) = Et * (1-T) * DF
+        
+        req_cash = ops_cost + int_after_tax + principal + rep - shield - sal_benefit
+        
+        df_e = 1 / ((1 + cost_equity) ** y)
+        
+        # 分母项
+        denom_term = et * (1 - tax_rate) * df_e
+        
+        data.append({
+            "Year": y,
+            "Generation": et,
+            "Opex(Taxed)": ops_cost,
+            "Interest": interest,
+            "Principal": principal,
+            "Tax Shield": -shield,
+            "Replacement": rep,
+            "Salvage Benefit": -sal_benefit,
+            "Required Cash Flow": req_cash * df_e, # 记录折现后的值方便Excel求和验证
+            "Discounted Gen(1-T)": denom_term
+        })
+        
+    df = pd.DataFrame(data)
+    
+    # Price = Sum(PV Req Cash) / Sum(PV Gen 1-T)
+    # 注意：Y0 的 initial_equity 也要加到分子里
+    num = df["Required Cash Flow"].sum()
+    den = df["Discounted Gen(1-T)"].sum()
+    
+    price = (num / den) * 10 if den > 0 else 0
+    return price, df
+
+# ==========================================
+# 4. 模块 UI 渲染
+# ==========================================
+def render_module(tech_type):
+    st.markdown(f"## 📊 {tech_type} 投资模型 (v16.0)")
+    
+    # --- 区域 1: 物理与成本 (Common) ---
     with st.container():
-        # --- Block 1: 物理与分项成本 (Requirement 1) ---
-        st.subheader("1. 物理与分项成本 (Physical & Detailed Costs)")
+        st.subheader("1. 物理与分项成本")
         
         c1, c2, c3 = st.columns(3)
-        # 物理
-        pv_cap = c1.number_input("光伏容量 (MW)", value=200.0)
-        pv_hours = c2.number_input("光伏小时数 (h)", value=2200.0)
-        pv_deg = c3.number_input("光伏年衰减 (%)", value=0.5) / 100
         
-        ess_cap = c1.number_input("储能容量 (MWh)", value=120.0)
-        # ess_cycles = c2.number_input("循环次数", value=365.0) # 暂简化
+        # 默认值
+        gen_list = []
+        fuel_cost = 0
+        capex_total = 0
+        opex_total = 0
+        period = 25
         
-        st.markdown("**💰 分项初始投资 (Capex Split)**")
-        cc1, cc2, cc3 = st.columns(3)
-        capex_pv = cc1.number_input("光伏设备投资 (万)", value=50000.0)
-        capex_ess = cc2.number_input("储能设备投资 (万)", value=10000.0)
-        capex_grid = cc3.number_input("电网及配套投资 (万)", value=15000.0)
-        
-        total_capex = capex_pv + capex_ess + capex_grid
-        st.caption(f"📊 总投资合计: {total_capex:,.0f} 万元")
-        
-        st.markdown("**🔧 分项运维费率 (Opex Split)**")
-        oo1, oo2, oo3 = st.columns(3)
-        opex_rate_pv = oo1.number_input("光伏运维费率 (%)", value=1.5) / 100
-        opex_rate_ess = oo2.number_input("储能运维费率 (%)", value=3.0) / 100
-        opex_rate_grid = oo3.number_input("配套运维费率 (%)", value=1.0) / 100
-        
-        total_annual_opex = (capex_pv * opex_rate_pv) + (capex_ess * opex_rate_ess) + (capex_grid * opex_rate_grid)
-        st.caption(f"🛠️ 年运维费合计: {total_annual_opex:,.0f} 万元/年")
+        if tech_type == "光伏+储能":
+            source = c1.radio("储能电力来源", ("光伏", "电网"))
+            cap_mw = c2.number_input("光伏容量 (MW)", 200.0)
+            hours = c3.number_input("光伏小时数", 2200.0)
+            cap_ess = c1.number_input("储能容量 (MWh)", 120.0)
+            cycles = c2.number_input("循环次数", 365.0)
+            eff = c3.number_input("效率 RTE%", 85.0)/100
+            
+            st.markdown("**💰 成本明细**")
+            cc1, cc2, cc3 = st.columns(3)
+            cx_pv = cc1.number_input("光伏造价 (万)", 50000.0)
+            cx_ess = cc2.number_input("储能造价 (万)", 10000.0)
+            cx_grid = cc3.number_input("配套造价 (万)", 15000.0)
+            capex_total = cx_pv + cx_ess + cx_grid
+            
+            st.markdown("**🔧 运维明细**")
+            oo1, oo2, oo3 = st.columns(3)
+            op_pv = oo1.number_input("光伏运维%", 1.5)/100
+            op_ess = oo2.number_input("储能运维%", 3.0)/100
+            op_grid = oo3.number_input("配套运维%", 1.0)/100
+            opex_total = (cx_pv*op_pv) + (cx_ess*op_ess) + (cx_grid*op_grid)
+            
+            # 燃料/充电成本
+            if source == "电网":
+                p_grid = st.number_input("充电电价", 0.20)
+                fuel_cost = (cap_ess * cycles * 1000 * p_grid) / 10000
+            
+            # 发电量序列
+            deg = 0.005
+            for y in range(period + 1):
+                if y == 0: gen_list.append(0)
+                else:
+                    base = cap_mw * hours * (1 - (y-1)*deg)
+                    if source == "光伏":
+                        loss = (cap_ess * cycles) * (1 - eff)
+                        gen_list.append(max(base - loss, 0))
+                    else:
+                        gen_list.append(base + (cap_ess * cycles * eff))
+                        
+        elif tech_type == "燃气发电":
+            cap_mw = c1.number_input("装机 (MW)", 360.0)
+            hours = c2.number_input("小时数", 3000.0)
+            rate = c3.number_input("热耗 (GJ/kWh)", 0.0095, format="%.4f")
+            price = c1.number_input("气价 (元/GJ)", 60.0)
+            
+            capex_total = c2.number_input("总投资 (万)", 60000.0)
+            opex_total = c3.number_input("固定运维 (万)", 1200.0)
+            
+            fuel_cost = (cap_mw * hours * 1000 * rate * price) / 10000
+            gen_list = [0] + [cap_mw * hours] * period
+            
+        elif tech_type == "储能 LCOS":
+            cap_mwh = c1.number_input("容量 (MWh)", 200.0)
+            cycles = c2.number_input("循环", 330.0)
+            eff = c3.number_input("效率%", 85.0)/100
+            
+            capex_total = c1.number_input("总投资 (万)", 25000.0)
+            opex_total = c2.number_input("总运维 (万)", 500.0)
+            p_charge = c3.number_input("充电价", 0.20)
+            
+            fuel_cost = (cap_mwh * cycles * 1000 * p_charge) / 10000
+            period = 15
+            gen_list = [0] + [cap_mwh * cycles * eff] * period
 
-        st.markdown("---")
+    # --- 区域 2: 财务与融资 (Added per request) ---
+    st.markdown("---")
+    st.subheader("2. 财务与融资参数 (Financials)")
+    
+    col_f1, col_f2 = st.columns(2)
+    
+    with col_f1:
+        st.markdown("###### 📘 WEMPR 参数 (技术测算)")
+        wacc_tech = st.number_input("全投资 WACC (%)", 7.0) / 100
         
-        # --- Block 2: 财务参数 (Requirement 2) ---
-        st.subheader("2. 财务与融资参数 (The Split)")
+    with col_f2:
+        st.markdown("###### 🏛️ Lazard 参数 (股东回报测算)")
+        f_a, f_b = st.columns(2)
+        debt_ratio = f_a.number_input("债权比例 (Debt Ratio %)", value=60.0) / 100
+        cost_debt = f_b.number_input("贷款利率 (Interest Rate %)", value=5.0) / 100
+        cost_equity = f_a.number_input("股权成本 (ROE/IRR %)", value=12.0) / 100
+        tax_rate = f_b.number_input("所得税率 (Tax %)", value=25.0) / 100
         
-        f1, f2, f3, f4 = st.columns(4)
-        # WEMPR Param
-        wacc_tech = f1.number_input("项目全投资 WACC (%)", value=7.0) / 100
-        
-        # Lazard Params
-        cost_equity = f2.number_input("股权成本 (IRR) (%)", value=12.0) / 100
-        tax_rate = f3.number_input("企业所得税率 (%)", value=25.0) / 100
-        
-        # Requirement 2: Residual Value Here
-        salvage_rate = f4.number_input("期末残值率 (%)", value=5.0, help="项目结束时资产回收比例") / 100
-        
-        period = st.number_input("项目周期 (年)", value=25)
-        
-        # Lifecycle
-        st.markdown("**🔄 资产置换**")
-        col_rep1, col_rep2 = st.columns(2)
-        rep_yr = col_rep1.number_input("更换年份", value=10)
-        rep_cost = col_rep2.number_input("更换成本 (万)", value=5000.0)
+    # 残值率 (Added per request)
+    st.markdown("###### ♻️ 资产回收")
+    sal_col1, sal_col2, sal_col3 = st.columns(3)
+    salvage_rate = sal_col1.number_input("期末残值率 (%)", 5.0) / 100
+    rep_yr = sal_col2.number_input("设备置换年份", 10)
+    rep_cost = sal_col3.number_input("置换成本 (万)", 5000.0)
+    
+    depr_years = 20 # Simplified hidden input or add to UI if needed
 
-    # ================= Calculation (Python Preview) =================
-    # 这里只做简单的 Python 估算用于界面展示，核心逻辑在 Excel 公式里
+    # ================= 计算与展示 =================
     
-    # WEMPR LCOE (Simplified)
-    years = np.arange(period + 1)
-    df_calc = pd.DataFrame({'Year': years})
+    # 1. WEMPR Calc
+    wempr_val, df_w = calc_wempr(range(period+1), capex_total, opex_total, fuel_cost, gen_list, 
+                                 wacc_tech, rep_yr, rep_cost, salvage_rate)
     
-    # Gen
-    df_calc['Gen'] = [0] + [pv_cap * pv_hours * (1 - (y-1)*pv_deg) for y in range(1, period+1)]
-    # Cost
-    df_calc['Invest'] = np.where(df_calc['Year']==0, total_capex, np.where(df_calc['Year']==rep_yr, rep_cost, 0))
-    df_calc['Opex'] = np.where(df_calc['Year']>0, total_annual_opex, 0)
-    df_calc['Total'] = df_calc['Invest'] + df_calc['Opex']
-    
-    # Discount
-    df_calc['DF'] = 1 / (1 + wacc_tech) ** df_calc['Year']
-    df_calc['PV_Cost'] = df_calc['Total'] * df_calc['DF']
-    df_calc['PV_Gen'] = df_calc['Gen'] * df_calc['DF']
-    
-    wempr_lcoe = (df_calc['PV_Cost'].sum() / df_calc['PV_Gen'].sum()) * 10
-    
-    # Lazard (Approx - for display only)
-    # Tax Shield Effect
-    depr = total_capex / 20
-    shield_npv = 0
-    for y in range(1, 21):
-        shield_npv += (depr * tax_rate) / ((1+cost_equity)**y)
-        
-    lazard_approx = wempr_lcoe * 0.85 # Placeholder estimation logic
+    # 2. Lazard Calc
+    lazard_val, df_l = calc_lazard(range(period+1), capex_total, opex_total, fuel_cost, gen_list,
+                                   debt_ratio, cost_debt, cost_equity, tax_rate, depr_years,
+                                   rep_yr, rep_cost, salvage_rate)
     
     st.markdown("---")
-    st.markdown("### 📊 测算结果预览")
-    c1, c2 = st.columns(2)
-    c1.metric("📘 WEMPR LCOE (技术成本)", f"{wempr_lcoe:.4f} 元/kWh")
-    c2.metric("🏛️ Lazard 参考价 (含税/融资)", f"见导出Excel", help="由于涉及复杂的债务偿还公式，请下载Excel查看精确计算")
-
-    # ================= Excel Export =================
-    # 准备参数字典
-    params = {
-        "PV Capacity (MW)": pv_cap,
-        "PV Hours": pv_hours,
-        "PV Degradation (%)": pv_deg,
-        "Period (Years)": period,
-        
-        "PV Capex (万)": capex_pv,
-        "ESS Capex (万)": capex_ess,
-        "Grid Capex (万)": capex_grid,
-        
-        "PV Opex Rate (%)": opex_rate_pv,
-        "ESS Opex Rate (%)": opex_rate_ess,
-        "Grid Opex Rate (%)": opex_rate_grid,
-        
-        "Replacement Year": rep_yr,
-        "Replacement Cost": rep_cost,
-        
-        "WEMPR WACC (%)": wacc_tech,
-        "Cost of Equity (%)": cost_equity,
-        "Tax Rate (%)": tax_rate,
-        "Salvage Rate (%)": salvage_rate,
-        "Depreciation Years": 20
+    st.markdown("### 🎯 测算结果")
+    
+    m1, m2, m3 = st.columns(3)
+    m1.metric("📘 WEMPR LCOE (技术成本)", f"{wempr_val:.4f}", help="不含税，全投资WACC折现")
+    # 满足您的需求：页面上必须显示 Lazard 结果
+    m2.metric("🏛️ Lazard Price (投资者报价)", f"{lazard_val:.4f}", help="含税，满足股权IRR，考虑杠杆")
+    m3.metric("差异 (报价溢价)", f"{lazard_val - wempr_val:.4f}")
+    
+    # Export
+    inputs_dict = {
+        "Tech Type": tech_type, "Capex": capex_total, "Opex": opex_total, "Fuel": fuel_cost,
+        "WEMPR WACC": wacc_tech, 
+        "Debt Ratio": debt_ratio, "Interest Rate": cost_debt, "ROE": cost_equity, "Tax": tax_rate,
+        "Result WEMPR": wempr_val, "Result Lazard": lazard_val
     }
     
-    excel_file = generate_live_formula_excel("PV_Storage_Dual", params)
-    st.download_button("📥 下载动态公式 Excel 模型", excel_file, "PV_Storage_LiveModel.xlsx")
+    excel_data = generate_hybrid_excel(tech_type, inputs_dict, df_w, wempr_val, df_l, lazard_val)
+    st.download_button(f"📥 下载 Excel 底稿 ({tech_type})", excel_data, f"{tech_type}_Model_v16.xlsx")
 
 # ==========================================
-# 4. Main
+# 5. Main
 # ==========================================
 def main():
-    st.sidebar.title("新能源建模工具 v15")
-    mode = st.sidebar.radio("模块选择", ("光伏+储能", "燃气发电 (Todo)", "储能 LCOS (Todo)"))
-    
-    if mode == "光伏+储能":
-        render_pv_storage_ui()
-    else:
-        st.info("本版本仅展示【光伏+储能】模块的深度公式化更新。其他模块逻辑类似。")
+    st.sidebar.title("新能源建模 v16")
+    mode = st.sidebar.radio("选择模块", ("光伏+储能", "燃气发电", "储能 LCOS"))
+    render_module(mode)
 
 if __name__ == "__main__":
     main()
