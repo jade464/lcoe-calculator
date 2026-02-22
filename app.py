@@ -1,424 +1,153 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import io
-import xlsxwriter
+import numpy_financial as npf
+import plotly.express as px
+import plotly.graph_objects as go
 
-# --- 1. 全局配置 ---
-st.set_page_config(page_title="新能源投资测算 (v16.0 Hybrid)", layout="wide", page_icon="💼")
-
+# ==========================================
+# 页面配置
+# ==========================================
+st.set_page_config(page_title="亿利集团重组项目财务测算模型", layout="wide")
+st.title("🏜️ 亿利集团“沙戈荒”风光氢醇及SAF一体化财务测算模型")
 st.markdown("""
-<style>
-    .main {background-color: #FAFAFA;}
-    h2 {color: #0F2948; border-bottom: 2px solid #1F4E79; padding-bottom: 10px;}
-    .block-container {padding-top: 2rem;}
-    div[data-testid="stMetric"] {
-        background-color: #FFF; border: 1px solid #DDD; 
-        border-radius: 8px; padding: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-</style>
-""", unsafe_allow_html=True)
+本模型基于亿利集团**阿拉善250万千瓦立体风光氢治沙制取航空燃料（SAF）一体化项目**的基准数据构建。
+您可以通过调整左侧的**土地税率**、**SAF国际售价**等核心参数，动态进行全生命周期（25年）的**IRR敏感性分析**与现金流压力测试。
+""")
 
 # ==========================================
-# 2. 核心引擎：Excel 混合生成器 (Hardcode Data + Formula Result)
+# 侧边栏：核心参数调节区
 # ==========================================
-def generate_hybrid_excel(model_name, inputs, df_wempr, lcoe_wempr, df_lazard, price_lazard):
-    output = io.BytesIO()
-    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
-    
-    # --- 样式 ---
-    fmt_head = workbook.add_format({'bold': True, 'bg_color': '#2F5597', 'font_color': 'white', 'border': 1, 'align': 'center'})
-    fmt_sub = workbook.add_format({'bold': True, 'bg_color': '#D9E1F2', 'border': 1})
-    fmt_num = workbook.add_format({'border': 1, 'num_format': '#,##0.00'})
-    fmt_money = workbook.add_format({'border': 1, 'num_format': '#,##0'})
-    # 结果单元格样式：黄色背景，突出显示
-    fmt_res = workbook.add_format({'bold': True, 'bg_color': '#FFFF00', 'border': 2, 'num_format': '0.0000', 'font_size': 12})
-    
-    # --- 辅助函数：清洗数据防止报错 ---
-    def clean_df(df):
-        return df.fillna(0).replace([np.inf, -np.inf], 0)
+st.sidebar.header("⚙️ 核心参数动态调节")
 
-    df_w = clean_df(df_wempr)
-    df_l = clean_df(df_lazard)
+st.sidebar.subheader("1. 政策与土地成本参数")
+# 1万亩 = 666.67万平方米
+land_area_wanmu = st.sidebar.number_input("项目占地面积 (万亩)", min_value=1.0, max_value=200.0, value=15.0, step=1.0)
+land_tax_rate = st.sidebar.slider("城镇土地使用税率 (元/平方米/年)", min_value=0.0, max_value=10.0, value=0.6, step=0.1, 
+                                  help="内蒙古现行最低标准为0.6元，免税政策取消后将面临全额征收。")
 
-    # ================= Sheet 1: WEMPR (Technical) =================
-    ws1 = workbook.add_worksheet('WEMPR (Tech)')
-    
-    # 1. Inputs
-    ws1.write('A1', f"{model_name} - Technical Assumptions", workbook.add_format({'bold': True, 'font_size': 14}))
-    r = 2
-    for k, v in inputs.items():
-        ws1.write(r, 0, k, fmt_sub)
-        # 简单的类型检查
-        val = v if isinstance(v, (int, float, str)) else str(v)
-        ws1.write(r, 1, val, fmt_num if isinstance(val, (int, float)) else None)
-        r += 1
-        
-    # 2. Data Table (Hardcoded Values)
-    r += 2
-    ws1.write(r, 0, "Cash Flow Table (Hardcoded Values)", workbook.add_format({'bold': True}))
-    r += 1
-    
-    cols1 = list(df_w.columns)
-    ws1.write_row(r, 0, cols1, fmt_head)
-    r += 1
-    
-    start_row = r + 1
-    for _, row in df_w.iterrows():
-        for c, val in enumerate(row):
-            ws1.write(r, c, val, fmt_money if "Cost" in cols1[c] or "Invest" in cols1[c] else fmt_num)
-        r += 1
-    end_row = r
-    
-    # 3. Summary Formulas (The "Live" Part)
-    r += 2
-    ws1.write(r, 0, ">>> 汇总计算 (Excel Formulas)", fmt_sub)
-    
-    # 找到 PV(Cost) 和 PV(Gen) 的列索引
-    try:
-        idx_cost = cols1.index("PV(Cost)")
-        idx_gen = cols1.index("PV(Gen)")
-        
-        col_char_cost = xlsxwriter.utility.xl_col_to_name(idx_cost)
-        col_char_gen = xlsxwriter.utility.xl_col_to_name(idx_gen)
-        
-        # 写入 SUM 公式
-        ws1.write(r, idx_cost, "Total Cost:", fmt_sub)
-        ws1.write_formula(r, idx_cost + 1, f"=SUM({col_char_cost}{start_row}:{col_char_cost}{end_row})", fmt_money)
-        
-        ws1.write(r+1, idx_cost, "Total Gen:", fmt_sub)
-        ws1.write_formula(r+1, idx_cost + 1, f"=SUM({col_char_gen}{start_row}:{col_char_gen}{end_row})", fmt_num)
-        
-        ws1.write(r+2, idx_cost, "LCOE:", fmt_sub)
-        # LCOE Formula: Cost / Gen * 10
-        cell_cost_sum = xlsxwriter.utility.xl_rowcol_to_cell(r, idx_cost + 1)
-        cell_gen_sum = xlsxwriter.utility.xl_rowcol_to_cell(r+1, idx_cost + 1)
-        ws1.write_formula(r+2, idx_cost + 1, f"={cell_cost_sum}/{cell_gen_sum}*10", fmt_res)
-        
-    except ValueError:
-        pass # 如果列名不对，跳过公式生成
+st.sidebar.subheader("2. 市场与产品增值参数")
+saf_price = st.sidebar.number_input("SAF 国际市场售价 (元/吨)", min_value=5000, max_value=30000, value=15552, step=500)
+naphtha_price = st.sidebar.number_input("生物石脑油 售价 (元/吨)", min_value=3000, max_value=15000, value=10080, step=100)
+capacity_rate = st.sidebar.slider("产能达成负荷率 (%)", min_value=50, max_value=100, value=100, step=1)
 
-    # ================= Sheet 2: Lazard (Financial) =================
-    ws2 = workbook.add_worksheet('Lazard (Investor)')
-    ws2.write('A1', "Lazard Investor View (Levered Cash Flow)", workbook.add_format({'bold': True, 'font_size': 14}))
-    
-    r = 3
-    cols2 = list(df_l.columns)
-    ws2.write_row(r, 0, cols2, fmt_head)
-    r += 1
-    
-    start_row = r + 1
-    for _, row in df_l.iterrows():
-        for c, val in enumerate(row):
-            ws2.write(r, c, val, fmt_money if c > 0 else fmt_num)
-        r += 1
-    end_row = r
-    
-    # Formula for Lazard Price
-    # Price = NPV(Required Cash) / NPV(Gen_After_Tax)
-    try:
-        idx_req = cols2.index("Required Cash Flow")
-        idx_gen_tax = cols2.index("Discounted Gen(1-T)")
-        
-        col_char_req = xlsxwriter.utility.xl_col_to_name(idx_req)
-        col_char_gen = xlsxwriter.utility.xl_col_to_name(idx_gen_tax)
-        
-        r += 2
-        ws2.write(r, 0, "Total Required Equity Cash (PV):", fmt_sub)
-        ws2.write_formula(r, 1, f"=SUM({col_char_req}{start_row}:{col_char_req}{end_row})", fmt_money)
-        
-        ws2.write(r+1, 0, "Total Effective Gen (PV):", fmt_sub)
-        ws2.write_formula(r+1, 1, f"=SUM({col_char_gen}{start_row}:{col_char_gen}{end_row})", fmt_num)
-        
-        ws2.write(r+2, 0, "Lazard Required Price:", fmt_sub)
-        cell_req_sum = "B" + str(r+1)
-        cell_gen_sum = "B" + str(r+2)
-        ws2.write_formula(r+2, 1, f"={cell_req_sum}/{cell_gen_sum}*10", fmt_res)
-        
-    except ValueError:
-        pass
-
-    workbook.close()
-    return output.getvalue()
+st.sidebar.subheader("3. 初始投资与运营参数")
+capex = st.sidebar.number_input("项目总投资 CAPEX (亿元)", min_value=50.0, max_value=500.0, value=219.33, step=5.0)
+opex_base = st.sidebar.number_input("年均基础运营成本 OPEX (亿元/年)", min_value=5.0, max_value=50.0, value=20.5, step=0.5,
+                                    help="包含设备折旧维护、人工及其他原材料成本（不含地税）。")
+project_life = st.sidebar.number_input("项目全生命运营周期 (年)", min_value=15, max_value=30, value=25, step=1)
 
 # ==========================================
-# 3. 计算引擎 (Python Logic)
+# 后台财务数据测算逻辑
 # ==========================================
-def calc_wempr(years, capex, opex, fuel, gen_list, wacc, rep_yr, rep_cost, salvage_rate):
-    # 纯技术模型：全投资，无税，无债
-    data = []
-    salvage_val = capex * salvage_rate
-    
-    for y in years:
-        it = capex if y == 0 else 0
-        if y == rep_yr: it += rep_cost
-        
-        mt = opex if y > 0 else 0
-        ft = fuel if y > 0 else 0
-        et = gen_list[y] if y < len(gen_list) else 0
-        
-        # 残值作为负成本
-        sal = -salvage_val if y == years[-1] else 0
-        
-        total_cost = it + mt + ft + sal
-        df = 1 / ((1 + wacc) ** y)
-        
-        data.append({
-            "Year": y,
-            "Generation": et,
-            "Capex": it,
-            "Opex": mt,
-            "Fuel": ft,
-            "Salvage": sal,
-            "Total Cost": total_cost,
-            "DF": df,
-            "PV(Gen)": et * df,
-            "PV(Cost)": total_cost * df
-        })
-    
-    df = pd.DataFrame(data)
-    lcoe = (df["PV(Cost)"].sum() / df["PV(Gen)"].sum()) * 10 if df["PV(Gen)"].sum() > 0 else 0
-    return lcoe, df
+# 1. 产能及收入计算 (满产基准：SAF 29万吨，石脑油 7.44万吨)
+annual_saf_revenue = (290000 * (capacity_rate / 100.0) * saf_price) / 100000000  # 亿元
+annual_naphtha_revenue = (74400 * (capacity_rate / 100.0) * naphtha_price) / 100000000  # 亿元
+total_revenue = annual_saf_revenue + annual_naphtha_revenue
 
-def calc_lazard(years, capex, opex, fuel, gen_list, 
-                debt_ratio, cost_debt, cost_equity, tax_rate, depr_years, 
-                rep_yr, rep_cost, salvage_rate):
-    # 财务模型：股权视角，含税，含债
-    
-    initial_debt = capex * debt_ratio
-    initial_equity = capex * (1 - debt_ratio)
-    
-    # 贷款偿还模拟 (等额本金)
-    loan_term = min(len(years)-1, 15)
-    principal_per_year = initial_debt / loan_term if loan_term > 0 else 0
-    
-    debt_bal = initial_debt
-    salvage_val = capex * salvage_rate
-    
-    data = []
-    
-    for y in years:
-        if y == 0:
-            data.append({
-                "Year": 0, "Required Cash Flow": initial_equity, "Discounted Gen(1-T)": 0,
-                "Generation":0, "Interest":0, "Principal":0, "Tax Shield":0
-            })
-            continue
-            
-        et = gen_list[y] if y < len(gen_list) else 0
-        
-        # 1. 运营流 (税后)
-        ops_cost = (opex + fuel) * (1 - tax_rate)
-        
-        # 2. 债务流
-        interest = debt_bal * cost_debt
-        principal = principal_per_year if y <= loan_term else 0
-        debt_bal -= principal
-        if debt_bal < 0: debt_bal = 0
-        
-        # 利息抵税后的实际支付
-        int_after_tax = interest * (1 - tax_rate)
-        
-        # 3. 税盾 (非现金流入)
-        # 假设直线折旧
-        depr = capex / depr_years if y <= depr_years else 0
-        shield = depr * tax_rate
-        
-        # 4. 置换与残值
-        rep = rep_cost if y == rep_yr else 0
-        # 残值流入需缴税，故抵扣成本 = Sal * (1-T)
-        sal_benefit = 0
-        if y == years[-1]:
-            sal_benefit = salvage_val * (1 - tax_rate)
-            
-        # === 股权视角的年度资金需求 (Required Revenue) ===
-        # 逻辑：为了让 Equity NPV=0，当年的收入(税后)必须覆盖所有支出(税后)
-        # Req_Rev * (1-T) = Ops(1-T) + Int(1-T) + Principal + Rep - Shield - Sal_Benefit
-        # 移项得：
-        # Year_Req_Cash (分子) = Ops(1-T) + Int(1-T) + Principal + Rep - Shield - Sal_Benefit
-        # Discounted Gen (分母) = Et * (1-T) * DF
-        
-        req_cash = ops_cost + int_after_tax + principal + rep - shield - sal_benefit
-        
-        df_e = 1 / ((1 + cost_equity) ** y)
-        
-        # 分母项
-        denom_term = et * (1 - tax_rate) * df_e
-        
-        data.append({
-            "Year": y,
-            "Generation": et,
-            "Opex(Taxed)": ops_cost,
-            "Interest": interest,
-            "Principal": principal,
-            "Tax Shield": -shield,
-            "Replacement": rep,
-            "Salvage Benefit": -sal_benefit,
-            "Required Cash Flow": req_cash * df_e, # 记录折现后的值方便Excel求和验证
-            "Discounted Gen(1-T)": denom_term
-        })
-        
-    df = pd.DataFrame(data)
-    
-    # Price = Sum(PV Req Cash) / Sum(PV Gen 1-T)
-    # 注意：Y0 的 initial_equity 也要加到分子里
-    num = df["Required Cash Flow"].sum()
-    den = df["Discounted Gen(1-T)"].sum()
-    
-    price = (num / den) * 10 if den > 0 else 0
-    return price, df
+# 2. 土地税计算
+# 1万亩 = 6666666.67 平方米
+land_area_sqm = land_area_wanmu * 6666666.67
+annual_land_tax = (land_area_sqm * land_tax_rate) / 100000000  # 亿元
+
+# 3. 净现金流测算
+annual_opex_total = opex_base + annual_land_tax
+annual_net_cash_flow = total_revenue - annual_opex_total
+
+# 构建现金流列表 (第0年为负的CAPEX，此后为每年的正向现金流)
+cash_flows = [-capex] + [annual_net_cash_flow] * int(project_life)
+
+# 4. 核心财务指标计算
+try:
+    project_irr = npf.irr(cash_flows) * 100  # 转换为百分比
+except:
+    project_irr = 0.0
+
+# 假设基准折现率为 8% 计算 NPV
+discount_rate = 0.08
+project_npv = npf.npv(discount_rate, cash_flows)
+
+# 静态投资回收期
+payback_period = capex / annual_net_cash_flow if annual_net_cash_flow > 0 else 999
 
 # ==========================================
-# 4. 模块 UI 渲染
+# 仪表盘：核心指标看板
 # ==========================================
-def render_module(tech_type):
-    st.markdown(f"## 📊 {tech_type} 投资模型 (v16.0)")
-    
-    # --- 区域 1: 物理与成本 (Common) ---
-    with st.container():
-        st.subheader("1. 物理与分项成本")
-        
-        c1, c2, c3 = st.columns(3)
-        
-        # 默认值
-        gen_list = []
-        fuel_cost = 0
-        capex_total = 0
-        opex_total = 0
-        period = 25
-        
-        if tech_type == "光伏+储能":
-            source = c1.radio("储能电力来源", ("光伏", "电网"))
-            cap_mw = c2.number_input("光伏容量 (MW)", min_value=0.0)
-            hours = c3.number_input("光伏小时数", min_value=0.0)
-            cap_ess = c1.number_input("储能容量 (MWh)", min_value=0.0)
-            cycles = c2.number_input("循环次数", min_value=0.0)
-            eff = c3.number_input("效率 RTE%", min_value=0.0)/100
-            
-            st.markdown("**💰 成本明细**")
-            cc1, cc2, cc3 = st.columns(3)
-            cx_pv = cc1.number_input("光伏造价 (万)", min_value=0.0)
-            cx_ess = cc2.number_input("储能造价 (万)", min_value=0.0)
-            cx_grid = cc3.number_input("配套造价 (万)", min_value=0.0)
-            capex_total = cx_pv + cx_ess + cx_grid
-            
-            st.markdown("**🔧 运维明细**")
-            oo1, oo2, oo3 = st.columns(3)
-            op_pv = oo1.number_input("光伏运维%", min_value=0.0)/100
-            op_ess = oo2.number_input("储能运维%", min_value=0.0)/100
-            op_grid = oo3.number_input("配套运维%", min_value=0.0)/100
-            opex_total = (cx_pv*op_pv) + (cx_ess*op_ess) + (cx_grid*op_grid)
-            
-            # 燃料/充电成本
-            if source == "电网":
-                p_grid = st.number_input("充电电价", min_value=0.0)
-                fuel_cost = (cap_ess * cycles * 1000 * p_grid) / 10000
-            
-            # 发电量序列
-            deg = 0.005
-            for y in range(period + 1):
-                if y == 0: gen_list.append(0)
-                else:
-                    base = cap_mw * hours * (1 - (y-1)*deg)
-                    if source == "光伏":
-                        loss = (cap_ess * cycles) * (1 - eff)
-                        gen_list.append(max(base - loss, 0))
-                    else:
-                        gen_list.append(base + (cap_ess * cycles * eff))
-                        
-        elif tech_type == "燃气发电":
-            cap_mw = c1.number_input("装机 (MW)", min_value=0.0)
-            hours = c2.number_input("小时数", min_value=0.0)
-            rate = c3.number_input("热耗 (GJ/kWh)", min_value=0.0, format="%.4f")
-            price = c1.number_input("气价 (元/GJ)", min_value=0.0)
-            
-            capex_total = c2.number_input("总投资 (万)", min_value=0.0)
-            opex_total = c3.number_input("固定运维 (万)", min_value=0.0)
-            
-            fuel_cost = (cap_mw * hours * 1000 * rate * price) / 10000
-            gen_list = [0] + [cap_mw * hours] * period
-            
-        elif tech_type == "储能 LCOS":
-            cap_mwh = c1.number_input("容量 (MWh)", min_value=0.0)
-            cycles = c2.number_input("循环", min_value=0.0)
-            eff = c3.number_input("效率%", min_value=0.0)/100
-            
-            capex_total = c1.number_input("总投资 (万)", min_value=0.0)
-            opex_total = c2.number_input("总运维 (万)", min_value=0.0)
-            p_charge = c3.number_input("充电价", min_value=0.0)
-            
-            fuel_cost = (cap_mwh * cycles * 1000 * p_charge) / 10000
-            period = 15
-            gen_list = [0] + [cap_mwh * cycles * eff] * period
+st.subheader("📊 核心财务指标看板")
 
-    # --- 区域 2: 财务与融资 (Added per request) ---
-    st.markdown("---")
-    st.subheader("2. 财务与融资参数 (Financials)")
-    
-    col_f1, col_f2 = st.columns(2)
-    
-    with col_f1:
-        st.markdown("###### 📘 WEMPR 参数 (技术测算)")
-        wacc_tech = st.number_input("全投资 WACC (%)", min_value=0.0) / 100
-        
-    with col_f2:
-        st.markdown("###### 🏛️ Lazard 参数 (股东回报测算)")
-        f_a, f_b = st.columns(2)
-        debt_ratio = f_a.number_input("债权比例 (Debt Ratio %)", min_value=0.0) / 100
-        cost_debt = f_b.number_input("贷款利率 (Interest Rate %)", min_value=0.0) / 100
-        cost_equity = f_a.number_input("股权成本 (ROE/IRR %)", min_value=0.0) / 100
-        tax_rate = f_b.number_input("所得税率 (Tax %)", min_value=0.0) / 100
-        
-    # 残值率 (Added per request)
-    st.markdown("###### ♻️ 资产回收")
-    sal_col1, sal_col2, sal_col3 = st.columns(3)
-    salvage_rate = sal_col1.number_input("期末残值率 (%)", min_value=0.0) / 100
-    rep_yr = sal_col2.number_input("设备置换年份", min_value=0.0)
-    rep_cost = sal_col3.number_input("置换成本 (万)", min_value=0.0)
-    
-    depr_years = 20 # Simplified hidden input or add to UI if needed
+col1, col2, col3, col4 = st.columns(4)
+col1.metric(label="全投资内部收益率 (IRR)", value=f"{project_irr:.2f} %", 
+            delta="面临严重亏损" if project_irr < 4.0 else "收益良好")
+col2.metric(label="项目净现值 (NPV @8%)", value=f"{project_npv:.2f} 亿元")
+col3.metric(label="静态投资回收期", value=f"{payback_period:.1f} 年")
+col4.metric(label="年均新增土地税金", value=f"{annual_land_tax:.2f} 亿元", 
+            delta=f"占总营收 {(annual_land_tax/total_revenue)*100:.1f}%", delta_color="inverse")
 
-    # ================= 计算与展示 =================
-    
-    # 1. WEMPR Calc
-    wempr_val, df_w = calc_wempr(range(period+1), capex_total, opex_total, fuel_cost, gen_list, 
-                                 wacc_tech, rep_yr, rep_cost, salvage_rate)
-    
-    # 2. Lazard Calc
-    lazard_val, df_l = calc_lazard(range(period+1), capex_total, opex_total, fuel_cost, gen_list,
-                                   debt_ratio, cost_debt, cost_equity, tax_rate, depr_years,
-                                   rep_yr, rep_cost, salvage_rate)
-    
-    st.markdown("---")
-    st.markdown("### 🎯 测算结果")
-    
-    m1, m2, m3 = st.columns(3)
-    m1.metric("📘 WEMPR LCOE (技术成本)", f"{wempr_val:.4f}", help="不含税，全投资WACC折现")
-    # 满足您的需求：页面上必须显示 Lazard 结果
-    m2.metric("🏛️ Lazard Price (投资者报价)", f"{lazard_val:.4f}", help="含税，满足股权IRR，考虑杠杆")
-    m3.metric("差异 (报价溢价)", f"{lazard_val - wempr_val:.4f}")
-    
-    # Export
-    inputs_dict = {
-        "Tech Type": tech_type, "Capex": capex_total, "Opex": opex_total, "Fuel": fuel_cost,
-        "WEMPR WACC": wacc_tech, 
-        "Debt Ratio": debt_ratio, "Interest Rate": cost_debt, "ROE": cost_equity, "Tax": tax_rate,
-        "Result WEMPR": wempr_val, "Result Lazard": lazard_val
-    }
-    
-    excel_data = generate_hybrid_excel(tech_type, inputs_dict, df_w, wempr_val, df_l, lazard_val)
-    st.download_button(f"📥 下载 Excel 底稿 ({tech_type})", excel_data, f"{tech_type}_Model_v16.xlsx")
+st.divider()
 
 # ==========================================
-# 5. Main
+# 图表区：现金流与敏感性分析
 # ==========================================
-def main():
-    st.sidebar.title("新能源建模 v16")
-    mode = st.sidebar.radio("选择模块", ("光伏+储能", "燃气发电", "储能 LCOS"))
-    render_module(mode)
+col_chart1, col_chart2 = st.columns(2)
 
-if __name__ == "__main__":
-    main()
+with col_chart1:
+    st.markdown("#### 📈 25年全生命周期累计现金流曲线")
+    # 累计现金流计算
+    cumulative_cf = [sum(cash_flows[:i+1]) for i in range(len(cash_flows))]
+    df_cf = pd.DataFrame({
+        "年份": list(range(int(project_life) + 1)),
+        "当期现金流 (亿元)": cash_flows,
+        "累计净现金流 (亿元)": cumulative_cf
+    })
+    
+    fig_cf = px.line(df_cf, x="年份", y="累计净现金流 (亿元)", markers=True, 
+                     title="累计现金流回本轨迹",
+                     color_discrete_sequence=['#2E86C1'])
+    fig_cf.add_hline(y=0, line_dash="dash", line_color="red", annotation_text="盈亏平衡线")
+    st.plotly_chart(fig_cf, use_container_width=True)
 
+with col_chart2:
+    st.markdown("#### 🌪️ 敏感性分析：土地税率 vs SAF售价 双因素雷达")
+    
+    # 构建二维数据矩阵用于热力图
+    tax_rates = [0.0, 0.6, 2.0, 5.0, 10.0]
+    saf_prices = [10000, 13000, 15552, 18000, 22000]
+    
+    sensitivity_data = []
+    for t_rate in tax_rates:
+        row = []
+        for s_price in saf_prices:
+            # 重新计算
+            temp_tax = (land_area_sqm * t_rate) / 100000000
+            temp_rev = (290000 * (capacity_rate / 100.0) * s_price) / 100000000 + annual_naphtha_revenue
+            temp_ncf = temp_rev - opex_base - temp_tax
+            temp_cfs = [-capex] + [temp_ncf] * int(project_life)
+            try:
+                temp_irr = npf.irr(temp_cfs) * 100
+            except:
+                temp_irr = -100
+            row.append(round(temp_irr, 2))
+        sensitivity_data.append(row)
+        
+    fig_heatmap = go.Figure(data=go.Heatmap(
+        z=sensitivity_data,
+        x=[f"{p}元/吨" for p in saf_prices],
+        y=[f"{t}元/平米" for t in tax_rates],
+        colorscale='RdYlGn',
+        text=sensitivity_data,
+        texttemplate="%{text}%"
+    ))
+    fig_heatmap.update_layout(
+        title="不同情境下的 IRR (%) 变化矩阵",
+        xaxis_title="SAF 国际售价",
+        yaxis_title="土地使用税率"
+    )
+    st.plotly_chart(fig_heatmap, use_container_width=True)
 
-
+# ==========================================
+# 财务总结与政策应对建议
+# ==========================================
+st.markdown("### 💡 动态模型结论与投资建议")
+st.info(f"""
+* **税收黑天鹅的破坏力**：在当前设置下，若内蒙古全面实施 **{land_tax_rate} 元/平方米** 的土地税征收标准，项目每年将凭空蒸发 **{annual_land_tax:.2f} 亿元** 的净现金流。这意味着传统的低毛利“光伏卖电”模式必将全线亏损，只有转向高毛利的SAF化工品才能对冲此风险。
+* **SAF绿色溢价的安全垫作用**：目前项目年均总营收约为 **{total_revenue:.2f} 亿元**。在满产状态下，若能长期锚定国际航空合规碳市场的绿油溢价（当前设定为 {saf_price} 元/吨），即便面临一定的地税压力，全投资IRR仍能稳定在 **{project_irr:.2f}%** 左右，具备极强的跨周期韧性，这也是吸引中信等央国企入局重组的最核心商业底座。
+""")
